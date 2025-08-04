@@ -1,5 +1,9 @@
 const std = @import("std");
 
+const SQLITE_DEFAULT_PAGE_SIZE: u16 = 4096; // Default page size for SQLite
+const SQLITE_HEADER_SIZE: u16 = 100; // Size of the SQLite header
+const ROOT_CELL_SIZE_OFFSET: u16 = 3; // Offset for the root cell size in the header
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -31,8 +35,9 @@ pub fn main() !void {
         var stdOutWriter = std.io.getStdOut().writer();
         try stdOutWriter.print("database page size: {}\n", .{page_size});
         var parser = RegexFileParser.init("CREATE TABLE", &file);
-        try parser.parse();
-        try stdOutWriter.print("number of tables: {d}\n", .{parser.occurrences()});
+        // try parser.parse();
+        const noOfTables = try parser.get_tables_count();
+        try stdOutWriter.print("number of tables: {d}\n", .{noOfTables});
     }
 }
 
@@ -51,6 +56,17 @@ const RegexFileParser = struct {
 
     pub fn occurrences(self: *Self) u32 {
         return self.count;
+    }
+
+    pub fn get_tables_count(self: *Self) !u32 {
+        self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET) catch |err| {
+            std.debug.print("Error seeking to root cell size offset: {}\n", .{err});
+            return 0;
+        };
+        var buf: [2]u8 = undefined;
+        _ = try self.file.read(&buf);
+        const tablesCount = std.mem.readInt(u16, &buf, .big);
+        return tablesCount;
     }
 
     pub fn parse(self: *Self) !void {
