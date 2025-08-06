@@ -77,7 +77,10 @@ fn tables(file: std.fs.File) !void {
             try filtered_names.append(name);
         }
     }
-    std.debug.print("Tables found: {s}\n", .{filtered_names.items});
+    for (filtered_names.items) |name| {
+        std.debug.print("{s} ", .{name});
+    }
+    std.debug.print("\n", .{});
 }
 
 const TableCellType = enum {
