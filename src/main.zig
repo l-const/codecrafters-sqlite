@@ -47,7 +47,7 @@ pub fn main() !void {
         var file = try openDbFile(database_file_path);
         defer file.close();
         try tables(file);
-    } else if (std.mem.startsWith(u8, command, "SELECT ")) {
+    } else if (std.mem.startsWith(u8, command, "SELECT ") or std.mem.startsWith(u8, command, "select ")) {
         var file = try openDbFile(database_file_path);
         defer file.close();
         try handle_query(file, command);
