@@ -1,4 +1,6 @@
 const std = @import("std");
+const readVarInt = @import("./varint.zig").readVarInt;
+const varint_byte_count = @import("./varint.zig").varint_byte_count;
 
 const SQLITE_DEFAULT_PAGE_SIZE: u16 = 4096; // Default page size for SQLite
 const SQLITE_HEADER_SIZE: u16 = 100; // Size of the SQLite header
@@ -9,10 +11,20 @@ const SQLITE_SCHEMA_TYPE_INDEX = 1;
 const SQLITE_SCHEMA_NAME_INDEX = 2;
 const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
 
+// var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+// const allocator = gpa.allocator();
+const allocator = std.heap.c_allocator;
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // defer {
+    //     const leak = allocator;
+    //     switch (leak) {
+    //         .leak => {
+    //             @panic("Memory leak detected");
+    //         },
+    //         else => {},
+    //     }
+    // }
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -61,7 +73,6 @@ fn dbInfo(file: std.fs.File) !void {
 }
 
 fn tables(file: std.fs.File) !void {
-    const allocator = std.heap.page_allocator;
     // try stdOutWriter.print("Listing tables is being implemented.\n", .{});
     const filePtr = @constCast(&file);
     var parser = Parser.init("CREATE TABLE", filePtr);
@@ -69,12 +80,19 @@ fn tables(file: std.fs.File) !void {
     defer cellPointers.deinit();
     // std.debug.print("Cell pointers: size: {d}, page: {d} , items[1]: {x}, items: {any}\n", .{ cellPointers.size, cellPointers.pageNo, try cellPointers.get_nth_offset(1), cellPointers.get_cells_pointers() });
     const table_names = try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+
     defer table_names.deinit();
     var filtered_names = std.ArrayList([]const u8).init(allocator);
     defer filtered_names.deinit();
     for (table_names.items) |name| {
         if (!std.mem.startsWith(u8, name, "sqlite")) {
             try filtered_names.append(name);
+        }
+    }
+    defer {
+        std.debug.print("Freeing table names...\n", .{});
+        for (table_names.items) |name| {
+            allocator.free(name); // manually free each heap-allocated item
         }
     }
     const stdOutWriter = std.io.getStdOut().writer();
@@ -93,7 +111,6 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
     // Implement the logic to read a record from the database file
     // based on the cell type (Interior or Leaf)
 
-    const allocator = std.heap.page_allocator;
     var table_names = std.ArrayList([]const u8).init(allocator);
     for (cell_offsets) |offset| {
         try file.seekTo(offset);
@@ -122,10 +139,10 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
             defer headerVarInts.deinit();
             var bytes_read: u16 = 0;
             while (bytes_read < record_header_size) {
-                const varint = try readVarInt(file);
-                // std.debug.print("Leaf cell header varint: {d}, content size: {d}\n", .{ varint, serialTypeToContentSize(varint) });
-                try headerVarInts.append(serialTypeToContentSize(varint));
-                bytes_read += varint_byte_count(varint);
+                const varInt = try readVarInt(file);
+                // std.debug.print("Leaf cell header varint: {d}, content size: {d}\n", .{ varInt, serialTypeToContentSize(varInt) });
+                try headerVarInts.append(serialTypeToContentSize(varInt));
+                bytes_read += varint_byte_count(varInt);
             }
             const offset_for_record_body = offset + payload_size_offset + row_id_size_bytes + record_header_size;
             // std.debug.print("Leaf cell seek to offset: {d}\n", .{offset_for_record_body});
@@ -137,13 +154,15 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
             const schemaTypeSize = headerVarInts.items[SQLITE_SCHEMA_TYPE_INDEX - 1];
             _ = try file.read(record_body_buf[0..schemaTypeSize]);
             const schemaType = try allocator.alloc(u8, schemaTypeSize);
-
+            defer allocator.free(schemaType);
             @memcpy(schemaType, record_body_buf[0..schemaTypeSize]);
+
             // std.debug.print("Leaf cell schema type: {s}\n", .{schemaType});
             record_body_buf = std.mem.zeroes([256]u8);
             const schemaNameSize = headerVarInts.items[SQLITE_SCHEMA_NAME_INDEX - 1];
             _ = try file.read(record_body_buf[0..schemaNameSize]);
             const schemaName = try allocator.alloc(u8, schemaNameSize);
+            defer allocator.free(schemaName);
             @memcpy(schemaName, record_body_buf[0..schemaNameSize]);
             // std.debug.print("Leaf cell schema name: {s}\n", .{schemaName});
             record_body_buf = std.mem.zeroes([256]u8);
@@ -194,33 +213,6 @@ fn serialTypeToContentSize(serial_type: u64) u64 {
         return 0; // variable
     }
     return 0;
-}
-
-fn readVarInt(file: *std.fs.File) !u64 {
-    var result: u64 = 0;
-    var shift: u6 = 0;
-    var buf: [1]u8 = undefined;
-
-    while (true) {
-        _ = try file.read(&buf);
-        const byte = buf[0];
-        result |= @as(u64, byte & 0x7F) << shift;
-        if ((byte & 0x80) == 0) break; // MSB not set: last byte
-        shift += 7;
-        if (shift > 63) return error.Overflow; // Prevent overflow
-    }
-
-    // std.debug.print("Read varint: {d}\n", .{result});
-    return result;
-}
-
-fn varint_byte_count(value: u64) u8 {
-    var n: u8 = 1;
-    var v = value;
-    while (v >= 0x80) : (v >>= 7) {
-        n += 1;
-    }
-    return n;
 }
 
 // Define the CellPointerArray structure
@@ -292,7 +284,6 @@ const Parser = struct {
     }
 
     pub fn parse_cellpointer_array(self: *Self) !CellPointerArray {
-        const allocator = std.heap.page_allocator;
         var cells_pointers = std.ArrayList(u16).init(allocator);
 
         try self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET);
