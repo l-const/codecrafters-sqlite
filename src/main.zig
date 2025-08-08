@@ -76,7 +76,7 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     const cellPointers = try parser.parse_cellpointer_array(rootPage);
     const rows = cellPointers.get_size();
     // std.debug.print("Number of rows in table {s}: {d}\n", .{ lowercase, rows });
-    try std.io.getStdOut().writer().print("{d}", .{rows});
+    try std.io.getStdOut().writer().print("{d}\n", .{rows});
     // Here you would implement the logic to read the table data from the database
 }
 
