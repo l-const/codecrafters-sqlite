@@ -1,19 +1,10 @@
 const std = @import("std");
 const Parser = @import("./parser.zig");
-const allocator = @import("./globals.zig").allocator;
+const globals = @import("./globals.zig");
+const allocator = globals.allocator;
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
 const serialTypeToContentSize = @import("./utils.zig").serialTypeToContentSize;
-
-const SQLITE_DEFAULT_PAGE_SIZE: u16 = 4096; // Default page size for SQLite
-const SQLITE_HEADER_SIZE: u16 = 100; // Size of the SQLite header
-const ROOT_CELL_SIZE_OFFSET: u16 = 3; // Offset for the root cell size in the header
-const PAGE_HEADER_TABLE_INTERIOR_SIZE: u16 = 12; // Size of the page header
-const PAGE_HEADER_TABLE_LEAF_SIZE: u16 = 8; // Size of the page header
-const SQLITE_SCHEMA_TYPE_INDEX = 1;
-const SQLITE_SCHEMA_NAME_INDEX = 2;
-const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
-const SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX = 4; // Index for the table name in the schema
 
 pub fn main() !void {
     // defer {
@@ -208,7 +199,7 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
             _ = try file.read(record_body_buf[0..payload_size]);
             record_body_buf = std.mem.zeroes([256]u8);
             try file.seekTo(offset_for_record_body);
-            const schemaTypeSize = headerVarInts.items[SQLITE_SCHEMA_TYPE_INDEX - 1];
+            const schemaTypeSize = headerVarInts.items[globals.SQLITE_SCHEMA_TYPE_INDEX - 1];
             _ = try file.read(record_body_buf[0..schemaTypeSize]);
             const schemaType = try allocator.alloc(u8, schemaTypeSize);
             defer allocator.free(schemaType);
@@ -216,21 +207,21 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
 
             // std.debug.print("Leaf cell schema type: {s}\n", .{schemaType});
             record_body_buf = std.mem.zeroes([256]u8);
-            const schemaNameSize = headerVarInts.items[SQLITE_SCHEMA_NAME_INDEX - 1];
+            const schemaNameSize = headerVarInts.items[globals.SQLITE_SCHEMA_NAME_INDEX - 1];
             _ = try file.read(record_body_buf[0..schemaNameSize]);
             const schemaName = try allocator.alloc(u8, schemaNameSize);
             defer allocator.free(schemaName);
             @memcpy(schemaName, record_body_buf[0..schemaNameSize]);
             // std.debug.print("Leaf cell schema name: {s}\n", .{schemaName});
             record_body_buf = std.mem.zeroes([256]u8);
-            const tableNameSize = headerVarInts.items[SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX - 1];
+            const tableNameSize = headerVarInts.items[globals.SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX - 1];
             _ = try file.read(record_body_buf[0..tableNameSize]);
             const tableName = try allocator.alloc(u8, tableNameSize);
             @memcpy(tableName, record_body_buf[0..tableNameSize]);
             // std.debug.print("Leaf cell table name: {s}\n", .{tableName});
             try table_names.append(tableName);
             record_body_buf = std.mem.zeroes([256]u8);
-            const rootPageSize = headerVarInts.items[SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX - 1];
+            const rootPageSize = headerVarInts.items[globals.SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX - 1];
             _ = try file.read(record_body_buf[0..rootPageSize]);
             var rootSlice: [4]u8 = undefined;
             for (rootSlice, 0..rootSlice.len) |_, i| {
