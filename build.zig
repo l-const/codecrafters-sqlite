@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
         .optimize = b.standardOptimizeOption(.{}),
     });
 
+    // when c allocator is used, link with C standard library ( malloc, and friends)
     exe.linkLibC();
 
     // This declares intent for the executable to be installed into the

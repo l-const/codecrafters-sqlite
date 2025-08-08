@@ -1,6 +1,7 @@
 const std = @import("std");
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
+const serialTypeToContentSize = @import("./utils.zig").serialTypeToContentSize;
 
 const SQLITE_DEFAULT_PAGE_SIZE: u16 = 4096; // Default page size for SQLite
 const SQLITE_HEADER_SIZE: u16 = 100; // Size of the SQLite header
@@ -45,9 +46,32 @@ pub fn main() !void {
         var file = try openDbFile(database_file_path);
         defer file.close();
         try tables(file);
+    } else if (std.mem.startsWith(u8, command, "SELECT ")) {
+        var file = try openDbFile(database_file_path);
+        defer file.close();
+        try handle_query(file, command);
     } else {
         try std.io.getStdErr().writer().print("Unknown command: {s}\n", .{command});
     }
+}
+
+fn handle_query(_: std.fs.File, command: []const u8) !void {
+    // Implement the logic to handle the query
+    // This is a placeholder for the actual implementation
+    var query_parts = std.mem.splitScalar(u8, command, ' ');
+    var table_name: []const u8 = "";
+    while (query_parts.next()) |part| {
+        table_name = part;
+    }
+
+    std.debug.print("Query for table: {s}\n", .{table_name});
+    std.debug.print("Query handling is not implemented yet.\n", .{});
+}
+
+fn find_table_root_page() !void {
+    // Implement the logic to find the root page of a table
+    // This is a placeholder for the actual implementation
+    std.debug.print("Finding table root page is not implemented yet.\n", .{});
 }
 
 fn openDbFile(file_path: []const u8) !std.fs.File {
@@ -65,7 +89,7 @@ fn dbInfo(file: std.fs.File) !void {
     var stdOutWriter = std.io.getStdOut().writer();
     try stdOutWriter.print("database page size: {}\n", .{page_size});
     const filePtr = @constCast(&file);
-    var parser = Parser.init("CREATE TABLE", filePtr);
+    var parser = Parser.init(filePtr);
     // try parser.parse();
     const noOfTables = try parser.get_tables_count();
     _ = try parser.is_root_page();
@@ -75,8 +99,8 @@ fn dbInfo(file: std.fs.File) !void {
 fn tables(file: std.fs.File) !void {
     // try stdOutWriter.print("Listing tables is being implemented.\n", .{});
     const filePtr = @constCast(&file);
-    var parser = Parser.init("CREATE TABLE", filePtr);
-    const cellPointers = try parser.parse_cellpointer_array();
+    var parser = Parser.init(filePtr);
+    const cellPointers = try parser.parse_cellpointer_array(1);
     defer cellPointers.deinit();
     // std.debug.print("Cell pointers: size: {d}, page: {d} , items[1]: {x}, items: {any}\n", .{ cellPointers.size, cellPointers.pageNo, try cellPointers.get_nth_offset(1), cellPointers.get_cells_pointers() });
     const table_names = try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
@@ -90,7 +114,6 @@ fn tables(file: std.fs.File) !void {
         }
     }
     defer {
-        std.debug.print("Freeing table names...\n", .{});
         for (table_names.items) |name| {
             allocator.free(name); // manually free each heap-allocated item
         }
@@ -180,41 +203,6 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
     return table_names;
 }
 
-fn serialTypeToContentSize(serial_type: u64) u64 {
-    if (serial_type >= 12 and serial_type % 2 == 0) {
-        return (serial_type - 12) / 2;
-    }
-
-    if (serial_type >= 13 and serial_type % 2 == 1) {
-        return (serial_type - 13) / 2;
-    }
-
-    if (serial_type == 0) {
-        return 0; // NULL
-    } else if (serial_type == 1) {
-        return 1;
-    } else if (serial_type == 2) {
-        return 2;
-    } else if (serial_type == 3) {
-        return 3;
-    } else if (serial_type == 4) {
-        return 4;
-    } else if (serial_type == 5) {
-        return 6;
-    } else if (serial_type == 6) {
-        return 8;
-    } else if (serial_type == 7) {
-        return 8;
-    } else if (serial_type == 8) {
-        return 0; // INT(0)
-    } else if (serial_type == 9) {
-        return 0; // INT(1)
-    } else if (serial_type == 10 or serial_type == 11) {
-        return 0; // variable
-    }
-    return 0;
-}
-
 // Define the CellPointerArray structure
 const CellPointerArrayError = error{
     OutOfBounds,
@@ -269,24 +257,21 @@ const CellPointerArray = struct {
 const Parser = struct {
     // Define your parser structure here
     // This is a placeholder for the actual implementation
-    count: u32,
-    regex: []const u8,
     file: *std.fs.File,
 
     const Self = @This();
 
-    pub fn init(regex: []const u8, file: *std.fs.File) Self {
-        return Self{ .count = 0, .regex = regex, .file = file };
+    pub fn init(file: *std.fs.File) Self {
+        return Self{ .file = file };
     }
 
-    pub fn occurrences(self: Self) u32 {
-        return self.count;
-    }
-
-    pub fn parse_cellpointer_array(self: *Self) !CellPointerArray {
+    pub fn parse_cellpointer_array(self: *Self, pageNumber: u32) !CellPointerArray {
         var cells_pointers = std.ArrayList(u16).init(allocator);
-
-        try self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET);
+        if (pageNumber > 1) {
+            try self.file.seekTo(pageNumber * SQLITE_DEFAULT_PAGE_SIZE + ROOT_CELL_SIZE_OFFSET);
+        } else {
+            try self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET);
+        }
         var buf: [2]u8 = undefined;
         _ = try self.file.read(&buf);
         const cellsCount = std.mem.readInt(u16, &buf, .big);
@@ -316,40 +301,5 @@ const Parser = struct {
         _ = try self.file.read(&buf);
         const tablesCount = std.mem.readInt(u16, &buf, .big);
         return tablesCount;
-    }
-
-    pub fn parse(self: *Self) !void {
-        const pageSize: u32 = 4096; // Example page size, adjust as needed
-        var seekPos: u32 = 0;
-        var buf: [1]u8 = undefined;
-        try self.file.seekTo(seekPos);
-        // Implement the parsing logic here
-        // This is a placeholder for the actual implementation
-        while (try self.file.read(&buf) != 0) {
-            // Process the byte read from the file
-
-            // std.debug.print("Read byte: {d}\n", .{buf[0]});
-            if (buf[0] == self.regex[0]) {
-                // Example condition to demonstrate parsing logic
-                // std.debug.print("Found 'C' at position {}\n", .{seekPos});
-                var regexRegex: [64]u8 = undefined;
-                const n = try self.file.read(regexRegex[0 .. self.regex.len - 1]);
-                if (std.mem.eql(u8, regexRegex[0..n], self.regex[1..])) {
-                    // std.debug.print("Detected CREATE TABLE command\n", .{});
-                    self.count += 1; // Example increment
-                } else {
-                    // std.debug.print("Detected other command: {s}\n", .{regexRegex});
-                }
-            }
-            const currentPosition = try self.file.getPos();
-            // std.debug.print("Current position in file: {}\n", .{currentPosition});
-
-            if (currentPosition >= pageSize) {
-                // std.debug.print("File has reached the end of the first file page - stop reading\n", .{});
-                break; // Stop reading if we exceed a certain position
-            }
-            seekPos += 1;
-        }
-        // std.debug.print("Parsing regex appearances: {s}\n", .{self.regex});
     }
 };
