@@ -1,4 +1,6 @@
 const std = @import("std");
+const Parser = @import("./parser.zig");
+const allocator = @import("./globals.zig").allocator;
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
 const serialTypeToContentSize = @import("./utils.zig").serialTypeToContentSize;
@@ -12,10 +14,6 @@ const SQLITE_SCHEMA_TYPE_INDEX = 1;
 const SQLITE_SCHEMA_NAME_INDEX = 2;
 const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
 const SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX = 4; // Index for the table name in the schema
-
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
-// const allocator = std.heap.c_allocator;
 
 pub fn main() !void {
     // defer {
@@ -248,110 +246,3 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
     }
     return .{ .tables = table_names, .rootPages = root_pages };
 }
-
-// Define the CellPointerArray structure
-const CellPointerArrayError = error{
-    OutOfBounds,
-};
-
-const CellPointerArray = struct {
-    cells_pointers: std.ArrayList(u16), // Using ArrayList for dynamic size
-    pageNo: u32 = 0, // page number
-
-    const Self = @This();
-
-    pub fn init(cells_pointers: std.ArrayList(u16)) Self {
-        const cellsPtr = @constCast(&cells_pointers);
-        const pageNo = Self.current_page_number(cellsPtr);
-        return Self{ .cells_pointers = cells_pointers, .pageNo = pageNo };
-    }
-
-    pub fn deinit(self: Self) void {
-        // Cleanup if necessary
-        self.cells_pointers.deinit();
-    }
-
-    pub inline fn get_size(self: *const Self) usize {
-        return self.cells_pointers.items.len;
-    }
-
-    pub inline fn get_page_number(self: *Self) u32 {
-        return self.pageNo;
-    }
-
-    inline fn current_page_number(cel_pointers: *std.ArrayList(u16)) u32 {
-        const offset = cel_pointers.items[0]; // Get the first cell pointer or return 0 if empty
-        // Round up division
-        return (offset + SQLITE_DEFAULT_PAGE_SIZE - 1) / SQLITE_DEFAULT_PAGE_SIZE;
-    }
-
-    pub fn get_cells_pointers(self: Self) []u16 {
-        return self.cells_pointers.items;
-    }
-
-    /// Returns the nth cell pointer from the array.
-    /// 1 is the first cell pointer.
-    pub fn get_nth_offset(self: Self, n: u32) CellPointerArrayError!u16 {
-        if (n > self.size) {
-            return CellPointerArrayError.OutOfBounds; // or handle error
-        }
-        return self.cells_pointers.items[n - 1];
-    }
-};
-
-const Parser = struct {
-    // Define your parser structure here
-    // This is a placeholder for the actual implementation
-    file: *std.fs.File,
-
-    const Self = @This();
-
-    pub fn init(file: *std.fs.File) Self {
-        return Self{ .file = file };
-    }
-
-    pub fn parse_cellpointer_array(self: *Self, pageNumber: u32) !CellPointerArray {
-        var cells_pointers = std.ArrayList(u16).init(allocator);
-        const seekToOffset = if (pageNumber > 1)
-            (pageNumber - 1) * SQLITE_DEFAULT_PAGE_SIZE + ROOT_CELL_SIZE_OFFSET
-        else
-            SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET;
-        try self.file.seekTo(seekToOffset);
-        // std.debug.print("Seeking to offset: {d}\n", .{seekToOffset});
-        // Read the number of cells in the page
-        var buf: [2]u8 = undefined;
-        _ = try self.file.read(&buf);
-        const cellsCount = std.mem.readInt(u16, &buf, .big);
-        // std.debug.print("Number of cells in page {d}: {d}\n", .{ pageNumber, cellsCount });
-        const leafHeaderOffset = if (pageNumber > 1)
-            (pageNumber - 1) * SQLITE_DEFAULT_PAGE_SIZE + PAGE_HEADER_TABLE_LEAF_SIZE
-        else
-            SQLITE_HEADER_SIZE + PAGE_HEADER_TABLE_LEAF_SIZE;
-        try self.file.seekTo(leafHeaderOffset);
-        for (0..cellsCount) |_| {
-            _ = try self.file.read(&buf);
-            const cellOffset = std.mem.readInt(u16, &buf, .big);
-            try cells_pointers.append(cellOffset);
-        }
-
-        return CellPointerArray.init(cells_pointers);
-    }
-
-    pub fn is_root_page(self: *Self) !bool {
-        // Check if the current page is the root page
-        const filePos = try self.file.getPos();
-        std.debug.print("Current file position: {}\n", .{filePos});
-        return filePos <= SQLITE_DEFAULT_PAGE_SIZE;
-    }
-
-    pub fn get_tables_count(self: *Self) !u32 {
-        self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET) catch |err| {
-            std.debug.print("Error seeking to root cell size offset: {}\n", .{err});
-            return 0;
-        };
-        var buf: [2]u8 = undefined;
-        _ = try self.file.read(&buf);
-        const tablesCount = std.mem.readInt(u16, &buf, .big);
-        return tablesCount;
-    }
-};
