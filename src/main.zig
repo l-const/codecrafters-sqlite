@@ -11,6 +11,7 @@ const PAGE_HEADER_TABLE_LEAF_SIZE: u16 = 8; // Size of the page header
 const SQLITE_SCHEMA_TYPE_INDEX = 1;
 const SQLITE_SCHEMA_NAME_INDEX = 2;
 const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
+const SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX = 4; // Index for the table name in the schema
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -55,23 +56,50 @@ pub fn main() !void {
     }
 }
 
-fn handle_query(_: std.fs.File, command: []const u8) !void {
+fn handle_query(file: std.fs.File, command: []const u8) !void {
     // Implement the logic to handle the query
     // This is a placeholder for the actual implementation
     var query_parts = std.mem.splitScalar(u8, command, ' ');
-    var table_name: []const u8 = "";
+    var table_name: []const u8 = undefined;
     while (query_parts.next()) |part| {
         table_name = part;
     }
+    const duped_table_name = table_name;
+    var lowercase: []u8 = try allocator.alloc(u8, table_name.len);
+    defer allocator.free(lowercase);
+    lowercase = std.ascii.lowerString(lowercase, duped_table_name);
+    // std.debug.print("Query for table: {s}\n", .{lowercase});
+    const rootPage = try find_table_root_page(file, lowercase);
+    var parser = Parser.init(@constCast(&file));
 
-    std.debug.print("Query for table: {s}\n", .{table_name});
-    std.debug.print("Query handling is not implemented yet.\n", .{});
+    // std.debug.print("Root page for table {s}: {d}\n", .{ lowercase, rootPage });
+    const cellPointers = try parser.parse_cellpointer_array(rootPage);
+    const rows = cellPointers.get_size();
+    // std.debug.print("Number of rows in table {s}: {d}\n", .{ lowercase, rows });
+    try std.io.getStdOut().writer().print("{d}", .{rows});
+    // Here you would implement the logic to read the table data from the database
 }
 
-fn find_table_root_page() !void {
+fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
     // Implement the logic to find the root page of a table
     // This is a placeholder for the actual implementation
-    std.debug.print("Finding table root page is not implemented yet.\n", .{});
+    const filePtr = @constCast(&file);
+    var parser = Parser.init(filePtr);
+    const cellPointers = try parser.parse_cellpointer_array(1);
+    defer cellPointers.deinit();
+    const tableRootPages =
+        try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+    const table_names = tableRootPages.tables;
+    const root_pages = tableRootPages.rootPages;
+    var index: ?usize = null;
+    for (table_names.items, 0..) |item, i| {
+        if (std.mem.eql(u8, item, table_name)) {
+            index = i;
+            break;
+        }
+    }
+    if (index == null) return 0;
+    return root_pages.items[index.?];
 }
 
 fn openDbFile(file_path: []const u8) !std.fs.File {
@@ -102,9 +130,11 @@ fn tables(file: std.fs.File) !void {
     var parser = Parser.init(filePtr);
     const cellPointers = try parser.parse_cellpointer_array(1);
     defer cellPointers.deinit();
-    // std.debug.print("Cell pointers: size: {d}, page: {d} , items[1]: {x}, items: {any}\n", .{ cellPointers.size, cellPointers.pageNo, try cellPointers.get_nth_offset(1), cellPointers.get_cells_pointers() });
-    const table_names = try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
-
+    const tableRootPages =
+        try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+    var table_names = tableRootPages.tables;
+    // const root_pages = tableRootPages.rootPages;
+    // std.debug.print("Root pages: {any}\n", .{root_pages.items});
     defer table_names.deinit();
     var filtered_names = std.ArrayList([]const u8).init(allocator);
     defer filtered_names.deinit();
@@ -130,11 +160,17 @@ const TableCellType = enum {
     Leaf,
 };
 
-fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellType) !std.ArrayList([]const u8) {
+const TableRootPages = struct {
+    tables: std.ArrayList([]const u8), // List of table names
+    rootPages: std.ArrayList(u32), // List of root page numbers
+};
+
+fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellType) !TableRootPages {
     // Implement the logic to read a record from the database file
     // based on the cell type (Interior or Leaf)
 
     var table_names = std.ArrayList([]const u8).init(allocator);
+    var root_pages = std.ArrayList(u32).init(allocator);
     for (cell_offsets) |offset| {
         try file.seekTo(offset);
         // _ = try file.read(&buf);
@@ -195,12 +231,22 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
             @memcpy(tableName, record_body_buf[0..tableNameSize]);
             // std.debug.print("Leaf cell table name: {s}\n", .{tableName});
             try table_names.append(tableName);
+            record_body_buf = std.mem.zeroes([256]u8);
+            const rootPageSize = headerVarInts.items[SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX - 1];
+            _ = try file.read(record_body_buf[0..rootPageSize]);
+            var rootSlice: [4]u8 = undefined;
+            for (rootSlice, 0..rootSlice.len) |_, i| {
+                rootSlice[i] = record_body_buf[i];
+            }
+            const rootPage: u32 = std.mem.bytesToValue(u32, rootSlice[0..4]);
+            // std.debug.print("Leaf cell root page: {d}\n", .{rootPage});
+            try root_pages.append(rootPage);
         } else {
             // Read interior cell data
             std.debug.print("Interior cell data: {any}\n", .{"not done yet"});
         }
     }
-    return table_names;
+    return .{ .tables = table_names, .rootPages = root_pages };
 }
 
 // Define the CellPointerArray structure
@@ -209,16 +255,15 @@ const CellPointerArrayError = error{
 };
 
 const CellPointerArray = struct {
-    size: usize,
     cells_pointers: std.ArrayList(u16), // Using ArrayList for dynamic size
-    pageNo: u32 = 0, // Current page number
+    pageNo: u32 = 0, // page number
 
     const Self = @This();
 
     pub fn init(cells_pointers: std.ArrayList(u16)) Self {
         const cellsPtr = @constCast(&cells_pointers);
         const pageNo = Self.current_page_number(cellsPtr);
-        return Self{ .size = cells_pointers.items.len, .cells_pointers = cells_pointers, .pageNo = pageNo };
+        return Self{ .cells_pointers = cells_pointers, .pageNo = pageNo };
     }
 
     pub fn deinit(self: Self) void {
@@ -226,8 +271,8 @@ const CellPointerArray = struct {
         self.cells_pointers.deinit();
     }
 
-    pub inline fn get_size(self: *Self) usize {
-        return self.size;
+    pub inline fn get_size(self: *const Self) usize {
+        return self.cells_pointers.items.len;
     }
 
     pub inline fn get_page_number(self: *Self) u32 {
@@ -267,15 +312,22 @@ const Parser = struct {
 
     pub fn parse_cellpointer_array(self: *Self, pageNumber: u32) !CellPointerArray {
         var cells_pointers = std.ArrayList(u16).init(allocator);
-        if (pageNumber > 1) {
-            try self.file.seekTo(pageNumber * SQLITE_DEFAULT_PAGE_SIZE + ROOT_CELL_SIZE_OFFSET);
-        } else {
-            try self.file.seekTo(SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET);
-        }
+        const seekToOffset = if (pageNumber > 1)
+            (pageNumber - 1) * SQLITE_DEFAULT_PAGE_SIZE + ROOT_CELL_SIZE_OFFSET
+        else
+            SQLITE_HEADER_SIZE + ROOT_CELL_SIZE_OFFSET;
+        try self.file.seekTo(seekToOffset);
+        // std.debug.print("Seeking to offset: {d}\n", .{seekToOffset});
+        // Read the number of cells in the page
         var buf: [2]u8 = undefined;
         _ = try self.file.read(&buf);
         const cellsCount = std.mem.readInt(u16, &buf, .big);
-        try self.file.seekTo(SQLITE_HEADER_SIZE + PAGE_HEADER_TABLE_LEAF_SIZE);
+        // std.debug.print("Number of cells in page {d}: {d}\n", .{ pageNumber, cellsCount });
+        const leafHeaderOffset = if (pageNumber > 1)
+            (pageNumber - 1) * SQLITE_DEFAULT_PAGE_SIZE + PAGE_HEADER_TABLE_LEAF_SIZE
+        else
+            SQLITE_HEADER_SIZE + PAGE_HEADER_TABLE_LEAF_SIZE;
+        try self.file.seekTo(leafHeaderOffset);
         for (0..cellsCount) |_| {
             _ = try self.file.read(&buf);
             const cellOffset = std.mem.readInt(u16, &buf, .big);
