@@ -280,7 +280,7 @@ const CellPointerArray = struct {
     }
 
     inline fn current_page_number(cel_pointers: *std.ArrayList(u16)) u32 {
-        const offset = cel_pointers.items[1]; // Get the first cell pointer or return 0 if empty
+        const offset = cel_pointers.items[0]; // Get the first cell pointer or return 0 if empty
         // Round up division
         return (offset + SQLITE_DEFAULT_PAGE_SIZE - 1) / SQLITE_DEFAULT_PAGE_SIZE;
     }
