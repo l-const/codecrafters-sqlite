@@ -11,13 +11,13 @@ const SQLITE_SCHEMA_TYPE_INDEX = 1;
 const SQLITE_SCHEMA_NAME_INDEX = 2;
 const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
 
-// var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-// const allocator = gpa.allocator();
-const allocator = std.heap.c_allocator;
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
+// const allocator = std.heap.c_allocator;
 
 pub fn main() !void {
     // defer {
-    //     const leak = allocator;
+    //     const leak = gpa.deinit();
     //     switch (leak) {
     //         .leak => {
     //             @panic("Memory leak detected");
