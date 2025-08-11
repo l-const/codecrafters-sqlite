@@ -1,6 +1,7 @@
 const std = @import("std");
 const Parser = @import("./parser.zig");
 const globals = @import("./globals.zig");
+const sqlparser = @import("./sql/parser.zig");
 const allocator = globals.allocator;
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
@@ -48,11 +49,21 @@ pub fn main() !void {
 fn handle_query(file: std.fs.File, command: []const u8) !void {
     // Implement the logic to handle the query
     // This is a placeholder for the actual implementation
-    var query_parts = std.mem.splitScalar(u8, command, ' ');
-    var table_name: []const u8 = undefined;
-    while (query_parts.next()) |part| {
-        table_name = part;
+    var sqlParser = try sqlparser.SQLParser.init(command, allocator);
+    defer sqlParser.deinit();
+    const statement = try sqlParser.parse(null);
+    defer statement.deinit();
+    if (statement.typ != sqlparser.StatementType.Select) {
+        try std.io.getStdErr().writer().print("Only SELECT statements are supported for now.\n", .{});
+        return;
     }
+    const table_name = statement.Select.table;
+
+    // var query_parts = std.mem.splitScalar(u8, command, ' ');
+    // var table_name: []const u8 = undefined;
+    // while (query_parts.next()) |part| {
+    //     table_name = part;
+    // }
     const duped_table_name = table_name;
     var lowercase: []u8 = try allocator.alloc(u8, table_name.len);
     defer allocator.free(lowercase);
