@@ -87,7 +87,7 @@ pub const Lexer = struct {
                 }
                 const value = self.input[start..self.pos];
                 // SQLite keywords (partial)
-                const keywords = [_][]const u8{ "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX", "INTO", "VALUES", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "INTEGER", "TEXT", "REAL", "BLOB", "AUTOINCREMENT" };
+                const keywords = [_][]const u8{ "SELECT", "COUNT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX", "INTO", "VALUES", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "INTEGER", "TEXT", "REAL", "BLOB", "AUTOINCREMENT" };
                 for (keywords) |kw| {
                     if (std.ascii.eqlIgnoreCase(value, kw)) {
                         return Token{ .typ = TokenType.Keyword, .value = value };
@@ -178,6 +178,41 @@ test "SELECT with reset" {
     token = try lexer.nextToken();
     try std.testing.expectEqual(token.typ, TokenType.Identifier);
     try std.testing.expect(std.mem.eql(u8, token.value, "FRUITS"));
+}
+
+test "tokenize_count_star - SELECT COUNT(*) FROM APPLES" {
+    const input = "SELECT COUNT(*) FROM APPLES";
+    const allocator = std.testing.allocator;
+    var lexer = try Lexer.init(input, allocator);
+    defer lexer.deinit(allocator);
+
+    var token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "SELECT"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "COUNT"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, "("));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, "*"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ")"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "FROM"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "APPLES"));
 }
 
 test "basic CREATE TABLE with symbol checks" {

@@ -11,4 +11,5 @@ pub const PAGE_HEADER_TABLE_LEAF_SIZE: u16 = 8; // Size of the page header
 pub const SQLITE_SCHEMA_TYPE_INDEX = 1;
 pub const SQLITE_SCHEMA_NAME_INDEX = 2;
 pub const SQLITE_SCHEMA_TYPE_TABLE_NAME_INDEX = 3;
-pub const SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX = 4; // Index for the table name in the schema
+pub const SQLITE_SCHEMA_TYPE_TABLE_ROOT_PAGE_INDEX = 4; // Index for the table root page in the schema
+pub const SQLITE_SCHEMA_TYPE_TABLE_SCHEMA_INDEX = 5; // Index for the table schema in the sqlite_schema

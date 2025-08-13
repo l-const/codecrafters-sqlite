@@ -25,12 +25,18 @@ pub const Column = struct {
 
 pub const SelectStatement = struct {
     columns: std.ArrayList([]const u8),
+    is_count: bool = false, // Indicates if the SELECT statement is an aggregate query
+    // functions: std.ArrayList([]const u8), // List of functions applied to columns, e.g., COUNT, SUM
+
+    // functions_to_columns: std.AutoHashMap([]const u8, std.ArrayList([]const u8)),
     table: []const u8,
 
     const Self = @This();
 
     pub fn deinit(self: *Self) void {
         self.columns.deinit();
+        // self.functions.deinit();
+        // self.functions_to_columns.deinit();
     }
 };
 
@@ -92,19 +98,43 @@ pub const SQLParser = struct {
     fn parse_select(self: *Self) !Statement {
         // Parse SELECT <columns> FROM <table>
         var columns = std.ArrayList([]const u8).init(self.allocator);
+        var is_count = false;
         // defer columns.deinit();
         var next = try self.lexer.nextToken();
-        while (next.typ == TokenType.Identifier or next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, ",")) {
-            if (next.typ == TokenType.Identifier) {
+
+        // SPECIAL CASE: Handle COUNT(*) syntax
+        if (next.typ == TokenType.Keyword and std.ascii.eqlIgnoreCase(next.value, "COUNT")) {
+            is_count = true;
+            next = try self.lexer.nextToken(); // LEFT PAREN
+            std.debug.assert(next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, "("));
+            next = try self.lexer.nextToken(); // Column name or *
+            if (next.typ == TokenType.Identifier or next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, "*")) {
                 try columns.append(next.value);
+                next = try self.lexer.nextToken(); // RIGHT PAREN
+                std.debug.assert(next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, ")"));
+                // return Statement{ .Select = SelectStatement{ .columns = columns, .is_count = true, .table = "" } };
+            } else {
+                return Statement{ .Unknown = {} };
             }
+        } else {
+            // Normal SELECT statement - parse comma-separated columns
+            while (next.typ == TokenType.Identifier or next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, ",")) {
+                if (next.typ == TokenType.Identifier) {
+                    try columns.append(next.value);
+                }
+                next = try self.lexer.nextToken();
+            }
+        }
+
+        if (is_count) {
             next = try self.lexer.nextToken();
         }
+
         if (next.typ == TokenType.Keyword and std.ascii.eqlIgnoreCase(next.value, "FROM")) {
             next = try self.lexer.nextToken();
             if (next.typ == TokenType.Identifier) {
                 const table = next.value;
-                return Statement{ .Select = SelectStatement{ .columns = columns, .table = table } };
+                return Statement{ .Select = SelectStatement{ .columns = columns, .is_count = is_count, .table = table } };
             }
         }
         return Statement{ .Unknown = {} };
@@ -194,6 +224,21 @@ test "parse SELECT statement" {
     try std.testing.expect(std.mem.eql(u8, select.table, "apples"));
 }
 
+test "parse COUNT(*) SELECT statement" {
+    const input = "SELECT COUNT(*) FROM apples";
+    const allocator = std.testing.allocator;
+    var parser = try SQLParser.init(input, allocator);
+    defer parser.deinit();
+    var stmt = try parser.parse(null);
+    defer stmt.deinit();
+    try std.testing.expect(stmt == StatementType.Select);
+    const select = stmt.Select;
+    try std.testing.expect(select.is_count);
+    try std.testing.expect(select.columns.items.len == 1);
+    try std.testing.expect(std.mem.eql(u8, select.columns.items[0], "*"));
+    try std.testing.expect(std.mem.eql(u8, select.table, "apples"));
+}
+
 test "parse CREATE TABLE statement" {
     const input = "CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)";
     const allocator = std.testing.allocator;
@@ -204,9 +249,7 @@ test "parse CREATE TABLE statement" {
     try std.testing.expect(stmt == StatementType.CreateTable);
     const create = stmt.CreateTable;
     try std.testing.expect(std.mem.eql(u8, create.table, "test"));
-    // Columns ArrayList should contain the column definitions
     try std.testing.expect(create.columns.items.len == 2);
-    std.debug.print("Columns: {s}\n", .{create.columns.items[0].name});
     try std.testing.expect(std.mem.eql(u8, create.columns.items[0].name, "id"));
     try std.testing.expect(create.columns.items[0].typ == SQLiteColumnType.Integer);
     try std.testing.expect(std.mem.eql(u8, create.columns.items[1].name, "name"));

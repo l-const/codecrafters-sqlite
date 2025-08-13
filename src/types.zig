@@ -1,7 +1,7 @@
 const std = @import("std");
 const ROOT_CELL_SIZE_OFFSET: u16 = @import("./globals.zig").ROOT_CELL_SIZE_OFFSET;
 const SQLITE_DEFAULT_PAGE_SIZE = @import("./globals.zig").SQLITE_DEFAULT_PAGE_SIZE;
-
+const CELL_PTR_SIZE_BYTES = 2; // Size of a cell pointer in bytes
 const DataBaseHeader = struct {
     magic: [16]u8, // 16 bytes
     page_size: u16, // 2 bytes
@@ -64,28 +64,28 @@ const DataBaseHeader = struct {
         @memcpy(slice[0..], input_slice[0..100]);
         // Read each field from the slice using comptimeReadBigEndian
         const magic: [16]u8 = slice[0..16].*;
-        const page_size = comptimeReadBigEndian(u16, slice[16..18]);
+        const page_size = readBigEndian(u16, slice[16..18]);
         const write_version = slice[18];
         const read_version = slice[19];
         const reserved_space = slice[20];
         const max_payload_fraction = slice[21];
         const min_payload_fraction = slice[22];
         const leaf_payload_fraction = slice[23];
-        const file_change_counter = comptimeReadBigEndian(u32, slice[24..28]);
-        const database_size = comptimeReadBigEndian(u32, slice[28..32]);
-        const first_freelist_page = comptimeReadBigEndian(u32, slice[32..36]);
-        const total_freelist_pages = comptimeReadBigEndian(u32, slice[36..40]);
-        const schema_cookie = comptimeReadBigEndian(u32, slice[40..44]);
-        const schema_format_number = comptimeReadBigEndian(u32, slice[44..48]);
-        const default_page_cache_size = comptimeReadBigEndian(u32, slice[48..52]);
-        const largest_root_page = comptimeReadBigEndian(u32, slice[52..56]);
-        const text_encoding = comptimeReadBigEndian(u32, slice[56..60]);
-        const user_version = comptimeReadBigEndian(u32, slice[60..64]);
-        const incremental_vacuum_mode = comptimeReadBigEndian(u32, slice[64..68]);
-        const application_id = comptimeReadBigEndian(u32, slice[68..72]);
+        const file_change_counter = readBigEndian(u32, slice[24..28]);
+        const database_size = readBigEndian(u32, slice[28..32]);
+        const first_freelist_page = readBigEndian(u32, slice[32..36]);
+        const total_freelist_pages = readBigEndian(u32, slice[36..40]);
+        const schema_cookie = readBigEndian(u32, slice[40..44]);
+        const schema_format_number = readBigEndian(u32, slice[44..48]);
+        const default_page_cache_size = readBigEndian(u32, slice[48..52]);
+        const largest_root_page = readBigEndian(u32, slice[52..56]);
+        const text_encoding = readBigEndian(u32, slice[56..60]);
+        const user_version = readBigEndian(u32, slice[60..64]);
+        const incremental_vacuum_mode = readBigEndian(u32, slice[64..68]);
+        const application_id = readBigEndian(u32, slice[68..72]);
         const _padding: [20]u8 = slice[72..92].*;
-        const version_valid_for = comptimeReadBigEndian(u32, slice[92..96]);
-        const sqlite_version_number = comptimeReadBigEndian(u32, slice[96..100]);
+        const version_valid_for = readBigEndian(u32, slice[92..96]);
+        const sqlite_version_number = readBigEndian(u32, slice[96..100]);
         return DataBaseHeader{
             .magic = magic,
             .page_size = page_size,
@@ -211,8 +211,8 @@ pub const CellPointerArray = struct {
 };
 
 /// Reads n bytes from a big-endian slice and returns the value as type T.
-/// Usage: comptimeReadBigEndian(u32, slice[0..4])
-pub fn comptimeReadBigEndian(comptime T: type, slice: []const u8) T {
+/// Usage: readBigEndian(u32, slice[0..4])
+pub fn readBigEndian(comptime T: type, slice: []const u8) T {
     var result: T = 0;
     for (slice) |b| {
         result = (result << 8) | @as(T, b);
@@ -220,9 +220,9 @@ pub fn comptimeReadBigEndian(comptime T: type, slice: []const u8) T {
     return result;
 }
 
-test "comptimeReadBigEndian" {
+test "readBigEndian" {
     const slice: [4]u8 = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
-    const value: u32 = comptimeReadBigEndian(u32, slice[0..4]);
+    const value: u32 = readBigEndian(u32, slice[0..4]);
     try std.testing.expectEqual(0x12345678, value);
 }
 
@@ -238,4 +238,116 @@ test "from_slice parses header from inspect-content.txt" {
     try std.testing.expectEqual(header.write_version, 0x01);
     try std.testing.expectEqual(header.read_version, 0x01);
     // Add more field checks as needed
+}
+
+pub const Buffer = struct {
+    data: []u8,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(data: []const u8, allocator: std.mem.Allocator) !Buffer {
+        const owned_data = try allocator.alloc(u8, data.len);
+        @memcpy(owned_data, data);
+        return Buffer{ .data = owned_data, .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.data);
+    }
+
+    pub fn asSlice(self: *const Self) []const u8 {
+        return self.data;
+    }
+};
+
+pub const PageContent = struct {
+    offset: usize, // 100 or 0 depending on the page type (root page containing the DataBaseHeader)
+    // The buffer contains the page content, which is a slice of bytes
+    buffer: ?Buffer,
+
+    const Self = @This();
+
+    pub fn init(offset: usize, buffer: Buffer) !Self {
+        return Self{ .offset = offset, .buffer = buffer };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.offset = 0; // Reset offset
+        self.buffer = null;
+    }
+
+    pub fn asSlice(self: *const Self) []const u8 {
+        return self.buffer.?.asSlice();
+    }
+
+    pub fn read_u8(self: *const Self, index: usize) u8 {
+        if (index >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return self.asSlice()[self.offset + index];
+    }
+
+    pub fn read_u16(self: *const Self, index: usize) u16 {
+        if (index + 1 >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return readBigEndian(u16, self.asSlice()[self.offset + index .. self.offset + index + 2]);
+    }
+
+    pub fn read_u32(self: *const Self, index: usize) u32 {
+        if (index + 3 >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return readBigEndian(u32, self.asSlice()[self.offset + index .. self.offset + index + 4]);
+    }
+
+    // Methods that ignore self.offset and read directly from the buffer
+    pub fn read_u8_at(self: *const Self, index: usize) u8 {
+        if (index >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return self.asSlice()[index];
+    }
+
+    pub fn read_u16_at(self: *const Self, index: usize) u16 {
+        if (index + 1 >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return readBigEndian(u16, self.asSlice()[index .. index + 2]);
+    }
+
+    pub fn read_u32_at(self: *const Self, index: usize) u32 {
+        if (index + 3 >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        return readBigEndian(u32, self.asSlice()[index .. index + 4]);
+    }
+
+    pub fn getPageType(self: *const Self) PageType {
+        return @enumFromInt(self.asSlice()[self.offset + 0]);
+    }
+
+    pub fn cell_count(self: *const Self) u16 {
+        return self.read_u16(3);
+    }
+
+    pub fn cell_pointer_array_size(self: *const Self) usize {
+        // The size of the cell pointer array is the number of cells times the size of a cell pointer
+        return self.cell_count() * CELL_PTR_SIZE_BYTES;
+    }
+};
+
+test "PageContent getPageType + cell_count" {
+    const buffer_data = [_]u8{ 0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00, 0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x2e, 0x7e, 0x5a, 0x0d, 0x00, 0x00, 0x00, 0x03, 0x0e, 0xc3, 0x00, 0x0f, 0x8f, 0x0f, 0x3d, 0x0d, 0x00, 0x00, 0x00, 0x03 };
+    const buffer = try Buffer.init(&buffer_data, std.testing.allocator);
+    var page_content = try PageContent.init(100, buffer);
+    defer page_content.deinit();
+
+    const page_type = page_content.getPageType();
+    try std.testing.expectEqual(PageType.TableLeaf, page_type);
+    const cell_count = page_content.cell_count();
+    try std.testing.expectEqual(3, cell_count);
+    const cell_pointer_array_size = page_content.cell_pointer_array_size();
+    try std.testing.expectEqual(6, cell_pointer_array_size); // 3 cells * CELL_PTR_SIZE_BYTES (2 bytes each)
 }

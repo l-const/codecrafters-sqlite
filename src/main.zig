@@ -2,6 +2,8 @@ const std = @import("std");
 const Parser = @import("./parser.zig");
 const globals = @import("./globals.zig");
 const sqlparser = @import("./sql/parser.zig");
+const Buffer = @import("./types.zig").Buffer;
+const PageContent = @import("./types.zig").PageContent;
 const allocator = globals.allocator;
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
@@ -37,6 +39,10 @@ pub fn main() !void {
         var file = try openDbFile(database_file_path);
         defer file.close();
         try tables(file);
+    } else if (std.mem.eql(u8, command, ".schema")) {
+        var file = try openDbFile(database_file_path);
+        defer file.close();
+        try schema(file);
     } else if (std.mem.startsWith(u8, command, "SELECT ") or std.mem.startsWith(u8, command, "select ")) {
         var file = try openDbFile(database_file_path);
         defer file.close();
@@ -51,19 +57,15 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     // This is a placeholder for the actual implementation
     var sqlParser = try sqlparser.SQLParser.init(command, allocator);
     defer sqlParser.deinit();
-    const statement = try sqlParser.parse(null);
+    var statement = try sqlParser.parse(null);
+    // std.debug.print("Parsed statement: {any}\n", .{statement});
     defer statement.deinit();
-    if (statement.typ != sqlparser.StatementType.Select) {
+    if (statement != sqlparser.StatementType.Select) {
         try std.io.getStdErr().writer().print("Only SELECT statements are supported for now.\n", .{});
         return;
     }
     const table_name = statement.Select.table;
 
-    // var query_parts = std.mem.splitScalar(u8, command, ' ');
-    // var table_name: []const u8 = undefined;
-    // while (query_parts.next()) |part| {
-    //     table_name = part;
-    // }
     const duped_table_name = table_name;
     var lowercase: []u8 = try allocator.alloc(u8, table_name.len);
     defer allocator.free(lowercase);
@@ -75,9 +77,12 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     // std.debug.print("Root page for table {s}: {d}\n", .{ lowercase, rootPage });
     const cellPointers = try parser.parse_cellpointer_array(rootPage);
     const rows = cellPointers.get_size();
-    // std.debug.print("Number of rows in table {s}: {d}\n", .{ lowercase, rows });
-    try std.io.getStdOut().writer().print("{d}\n", .{rows});
-    // Here you would implement the logic to read the table data from the database
+    if (statement.Select.is_count) {
+        try std.io.getStdOut().writer().print("{d}\n", .{rows});
+        // Here you would implement the logic to read the table data from the database
+        // std.debug.print("Number of rows in table {s}: {d}\n", .{ lowercase, rows });
+        return;
+    }
 }
 
 fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
@@ -88,7 +93,7 @@ fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
     const cellPointers = try parser.parse_cellpointer_array(1);
     defer cellPointers.deinit();
     const tableRootPages =
-        try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+        try readRootPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
     const table_names = tableRootPages.tables;
     const root_pages = tableRootPages.rootPages;
     var index: ?usize = null;
@@ -107,20 +112,42 @@ fn openDbFile(file_path: []const u8) !std.fs.File {
     return file;
 }
 
-fn dbInfo(file: std.fs.File) !void {
-    // Implement the logic to gather database information
-    // Uncomment this block to pass the first stage
-    var buf: [2]u8 = undefined;
-    _ = try file.seekTo(16);
-    _ = try file.read(&buf);
-    const page_size = std.mem.readInt(u16, &buf, .big);
-    var stdOutWriter = std.io.getStdOut().writer();
-    try stdOutWriter.print("database page size: {}\n", .{page_size});
+fn schema(file: std.fs.File) !void {
+    // Implement the logic to handle the schema command
+    // This is a placeholder for the actual implementation
     const filePtr = @constCast(&file);
     var parser = Parser.init(filePtr);
-    // try parser.parse();
-    const noOfTables = try parser.get_tables_count();
-    _ = try parser.is_root_page();
+    const cellPointers = try parser.parse_cellpointer_array(1);
+    defer cellPointers.deinit();
+    const tableRootPages =
+        try readRootPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+    var table_names = tableRootPages.tables;
+    // const root_pages = tableRootPages.rootPages;
+    // std.debug.print("Root pages: {any}\n", .{root_pages.items});
+    defer table_names.deinit();
+
+    for (tableRootPages.sqls.items) |sql| {
+        try std.io.getStdOut().writer().print("{s};\n", .{sql});
+    }
+}
+
+fn dbInfo(file: std.fs.File) !void {
+    _ = try file.seekTo(0);
+
+    var buf: [globals.SQLITE_DEFAULT_PAGE_SIZE]u8 = undefined;
+    _ = try file.read(&buf);
+    var root_page_content = try Buffer.init(&buf, allocator);
+    defer root_page_content.deinit();
+    var page_content = PageContent{
+        .offset = 100,
+        .buffer = root_page_content,
+    };
+    defer page_content.deinit();
+
+    const page_size = page_content.read_u16_at(16);
+    var stdOutWriter = std.io.getStdOut().writer();
+    try stdOutWriter.print("database page size: {}\n", .{page_size});
+    const noOfTables = page_content.read_u16(globals.ROOT_CELL_SIZE_OFFSET);
     try stdOutWriter.print("number of tables: {d}\n", .{noOfTables});
 }
 
@@ -131,11 +158,13 @@ fn tables(file: std.fs.File) !void {
     const cellPointers = try parser.parse_cellpointer_array(1);
     defer cellPointers.deinit();
     const tableRootPages =
-        try readPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
+        try readRootPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
     var table_names = tableRootPages.tables;
+    var sql_schemas = tableRootPages.sqls;
     // const root_pages = tableRootPages.rootPages;
     // std.debug.print("Root pages: {any}\n", .{root_pages.items});
     defer table_names.deinit();
+    defer sql_schemas.deinit();
     var filtered_names = std.ArrayList([]const u8).init(allocator);
     defer filtered_names.deinit();
     for (table_names.items) |name| {
@@ -146,6 +175,12 @@ fn tables(file: std.fs.File) !void {
     defer {
         for (table_names.items) |name| {
             allocator.free(name); // manually free each heap-allocated item
+        }
+    }
+
+    defer {
+        for (sql_schemas.items) |sql| {
+            allocator.free(sql); // manually free each heap-allocated item
         }
     }
     const stdOutWriter = std.io.getStdOut().writer();
@@ -162,15 +197,26 @@ const TableCellType = enum {
 
 const TableRootPages = struct {
     tables: std.ArrayList([]const u8), // List of table names
+    sqls: std.ArrayList([]const u8), // List of SQL CREATE statements - SCHEMAS
     rootPages: std.ArrayList(u32), // List of root page numbers
 };
 
-fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellType) !TableRootPages {
+fn readRecords(page_content: PageContent) void {
+    // Implement the logic to read records from the database file
+    // This is a placeholder for the actual implementation
+    const page_type = page_content.getPageType();
+    const is_leaf = page_type.is_leaf();
+    const is_table = page_type.is_table();
+    std.debug.print("Reading records for page type: is_leaf: {any}, is_table: {any} \n", .{ is_leaf, is_table });
+}
+
+fn readRootPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellType) !TableRootPages {
     // Implement the logic to read a record from the database file
     // based on the cell type (Interior or Leaf)
 
     var table_names = std.ArrayList([]const u8).init(allocator);
     var root_pages = std.ArrayList(u32).init(allocator);
+    var sql_schemas = std.ArrayList([]const u8).init(allocator);
     for (cell_offsets) |offset| {
         try file.seekTo(offset);
         // _ = try file.read(&buf);
@@ -241,10 +287,17 @@ fn readPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellT
             const rootPage: u32 = std.mem.bytesToValue(u32, rootSlice[0..4]);
             // std.debug.print("Leaf cell root page: {d}\n", .{rootPage});
             try root_pages.append(rootPage);
+            record_body_buf = std.mem.zeroes([256]u8);
+            const sqlSize = headerVarInts.items[globals.SQLITE_SCHEMA_TYPE_TABLE_SCHEMA_INDEX - 1];
+            _ = try file.read(record_body_buf[0..sqlSize]);
+            const sqlSchema = try allocator.alloc(u8, sqlSize);
+            // defer allocator.free(sqlSchema);
+            @memcpy(sqlSchema, record_body_buf[0..sqlSize]);
+            try sql_schemas.append(sqlSchema);
         } else {
             // Read interior cell data
             std.debug.print("Interior cell data: {any}\n", .{"not done yet"});
         }
     }
-    return .{ .tables = table_names, .rootPages = root_pages };
+    return .{ .tables = table_names, .sqls = sql_schemas, .rootPages = root_pages };
 }

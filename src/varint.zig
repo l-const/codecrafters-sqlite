@@ -1,20 +1,33 @@
 const std = @import("std");
 
 pub fn readVarInt(file: *std.fs.File) !u64 {
-    var result: u64 = 0;
-    var shift: u6 = 0;
-    var buf: [1]u8 = undefined;
-
-    while (true) {
-        _ = try file.read(&buf);
-        const byte = buf[0];
-        result |= @as(u64, byte & 0x7F) << shift;
-        if ((byte & 0x80) == 0) break; // MSB not set: last byte
-        shift += 7;
-        if (shift > 63) return error.Overflow; // Prevent overflow
+    var buf: [9]u8 = undefined;
+    var i: usize = 0;
+    while (i < 9) {
+        var tmp: [1]u8 = undefined;
+        _ = try file.read(&tmp);
+        buf[i] = tmp[0];
+        if (i < 8 and (buf[i] & 0x80) == 0) {
+            i += 1;
+            break;
+        }
+        i += 1;
+        if (i == 9) break;
     }
-
-    // std.debug.print("Read varint: {d}\n", .{result});
+    if (i == 0) return error.UnexpectedEnd;
+    if (i > 9) return error.Overflow;
+    var result: u64 = 0;
+    if (i < 9) {
+        for (0..i) |j| {
+            result = (result << 7) | @as(u64, buf[j] & 0x7F);
+        }
+    } else {
+        // 9 bytes: first 8 use 7 bits, last uses all 8 bits
+        for (0..8) |j| {
+            result = (result << 7) | @as(u64, buf[j] & 0x7F);
+        }
+        result = (result << 8) | @as(u64, buf[8]);
+    }
     return result;
 }
 
@@ -26,3 +39,5 @@ pub fn varint_byte_count(value: u64) u8 {
     }
     return n;
 }
+
+// test
