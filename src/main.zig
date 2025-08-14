@@ -84,10 +84,6 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     const rootPageSql = try find_table_root_page(file, lowercase);
     const rootPage = rootPageSql.root_page;
     const table_schema = rootPageSql.sql;
-    // const trimmed_table_schema = std.mem.trim(u8, table_schema, " \n\r\t");
-    // const final_schema = trimmed_table_schema;
-    // // Use final_schema wherever you need the schema without whitespace
-    // std.debug.print("Table schema: {s}\n", .{final_schema});
     var parser = Parser.init(@constCast(&file));
     const cellPointers = try parser.parse_cellpointer_array(rootPage);
     const rows = cellPointers.get_size();
@@ -98,22 +94,19 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     // Find columns in the select statement if any
     const select_columns = statement.Select.columns;
     // std.debug.print("Column(s) in select: ", .{});
-    for (select_columns.items) |column| {
-        std.debug.print("{s} ", .{column});
-    }
-    std.debug.print("\n", .{});
+    // for (select_columns.items) |column| {
+    //     std.debug.print("{s} ", .{column});
+    // }
+    // std.debug.print("\n", .{});
 
     sqlParser = try sqlparser.SQLParser.init(table_schema, allocator);
     const stmt = try sqlParser.parse(null);
     const create_stmt = stmt.CreateTable;
     const table_columns: std.ArrayList(Column) = create_stmt.columns;
-    // std.debug.print("Rows in table {s}: is rootPage {d}\n", .{ table_name, rootPage });
     const filerootPageOffset = (rootPage - 1) * globals.SQLITE_DEFAULT_PAGE_SIZE;
-    // std.debug.print("filerootPageOffset: {d}\n", .{filerootPageOffset});
     try file.seekTo(filerootPageOffset);
     var buf: [globals.SQLITE_DEFAULT_PAGE_SIZE]u8 = undefined;
     _ = try file.read(&buf);
-    // std.debug.print("Read {d} bytes from file at offset {d}\n", .{ buf.len, filerootPageOffset });
     var root_page_content = try Buffer.init(&buf, allocator);
     defer root_page_content.deinit();
     var page_content = PageContent{
@@ -121,10 +114,10 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         .buffer = root_page_content,
     };
     defer page_content.deinit();
-    try parse_page_rows(page_content, table_columns.items, select_columns.items[0]);
+    try parse_page_rows(page_content, table_columns.items, select_columns.items);
 }
 
-fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_column: []const u8) !void {
+fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_columns: [][]const u8) !void {
     const rowsList = try page_content.getRows();
     const rows = rowsList.items;
 
@@ -135,25 +128,30 @@ fn parse_page_rows(page_content: PageContent, table_columns: []const Column, sel
         try column_names.append(column.name);
     }
 
-    // Find the index of select_column in column_names
-    var selected_column_index: ?usize = null;
-    for (column_names.items, 0..) |col_name, idx| {
-        if (std.mem.eql(u8, select_column, col_name)) {
-            selected_column_index = idx;
-            break;
+    // Find the indexes of all select_columns in column_names
+    var columnIndexs = std.ArrayList(u64).init(allocator);
+    defer columnIndexs.deinit();
+    for (select_columns) |sel_col| {
+        var found: bool = false;
+        for (column_names.items, 0..) |col_name, idx| {
+            if (std.mem.eql(u8, sel_col, col_name)) {
+                try columnIndexs.append(idx);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print("Selected column not found: {s}\n", .{sel_col});
         }
     }
-    if (selected_column_index == null) {
-        std.debug.print("Selected column not found\n", .{});
+    if (columnIndexs.items.len == 0) {
+        std.debug.print("No valid selected columns found\n", .{});
         return;
     }
-    var columnIndexs = [_]u64{@as(u64, selected_column_index.?)}; // array
-    const columnIndexs_slice: []u64 = columnIndexs[0..]; // slice
 
-    // Now use columnIndexs in format_output_row
-    for (0..rows.len) |i| {
-        const row = rows[i];
-        try format_output_row(row, columnIndexs_slice);
+    // Use all found indexes in format_output_row
+    for (rows) |row| {
+        try format_output_row(row, columnIndexs.items);
     }
 }
 
@@ -161,22 +159,17 @@ fn format_output_row(row: Row, columnIndexs: []u64) !void {
     if (columnIndexs.len > 0) {
         std.debug.assert(columnIndexs.len > 0);
     }
-    // TODO: Implement row formatting logic
-    // read the row Id from that field as the first field is null on cell
-    const rowId = row.rowId;
     const stdOutWriter = std.io.getStdOut().writer();
-    // rowId is the first field, so we print it first
-    if (std.mem.indexOf(u64, columnIndexs, &[_]u64{0}) != null) try stdOutWriter.print("{d}", .{rowId});
-    for (1..row.fields.len) |i| {
-        // const field = row.fields[i];
-        if (row.fields.len > i) {
-            // TODO: Implement column-based formatting logic
-            if (columnIndexs.len > 0 and std.mem.indexOf(u64, columnIndexs, &[_]u64{i}) == null) {
-                continue; // Skip this field if it's not in the columnIndexs
+    for (columnIndexs, 0..) |col_index, iter| {
+        if (col_index < row.fields.len) {
+            if (iter > 0) {
+                try stdOutWriter.print("|", .{});
             }
-            const field = row.fields[i];
-            try stdOutWriter.print("{s}", .{field});
-            // try stdOutWriter.print("|{s}", .{field});
+            if (col_index == 0) {
+                try stdOutWriter.print("{d}", .{row.rowId});
+            } else {
+                try stdOutWriter.print("{s}", .{row.fields[col_index]});
+            }
         } else {
             try stdOutWriter.print("NULL ", .{});
         }
