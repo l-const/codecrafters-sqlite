@@ -28,6 +28,7 @@ pub fn readVarInt(file: *std.fs.File) !u64 {
         }
         result = (result << 8) | @as(u64, buf[8]);
     }
+    // std.debug.print("Read varint: {d}, {any}\n", .{ result, buf[0..i] });
     return result;
 }
 

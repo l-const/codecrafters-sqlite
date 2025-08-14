@@ -1,7 +1,8 @@
 const std = @import("std");
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-pub const allocator = gpa.allocator();
-// const allocator = std.heap.c_allocator;
+
+// Static global arena allocator
+pub var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+pub const allocator = arena_instance.allocator();
 
 pub const SQLITE_DEFAULT_PAGE_SIZE: u16 = 4096; // Default page size for SQLite
 pub const SQLITE_HEADER_SIZE: u16 = 100; // Size of the SQLite header

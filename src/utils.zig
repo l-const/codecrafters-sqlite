@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub fn serialTypeToContentSize(serial_type: u64) u64 {
     if (serial_type >= 12 and serial_type % 2 == 0) {
         return (serial_type - 12) / 2;
@@ -31,4 +33,21 @@ pub fn serialTypeToContentSize(serial_type: u64) u64 {
         return 0; // variable
     }
     return 0;
+}
+
+test "serialTypeToContentSize" {
+    try std.testing.expectEqual(0, serialTypeToContentSize(0));
+    try std.testing.expectEqual(1, serialTypeToContentSize(1));
+    try std.testing.expectEqual(2, serialTypeToContentSize(2));
+    try std.testing.expectEqual(3, serialTypeToContentSize(3));
+    try std.testing.expectEqual(4, serialTypeToContentSize(4));
+    try std.testing.expectEqual(6, serialTypeToContentSize(5));
+    try std.testing.expectEqual(8, serialTypeToContentSize(6));
+    try std.testing.expectEqual(8, serialTypeToContentSize(7));
+    try std.testing.expectEqual(0, serialTypeToContentSize(8));
+    try std.testing.expectEqual(0, serialTypeToContentSize(9));
+    try std.testing.expectEqual(0, serialTypeToContentSize(10));
+    try std.testing.expectEqual(0, serialTypeToContentSize(11));
+    try std.testing.expectEqual(92, serialTypeToContentSize(196));
+    try std.testing.expectEqual(7, serialTypeToContentSize(27));
 }
