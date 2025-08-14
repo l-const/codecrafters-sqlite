@@ -87,10 +87,13 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         try std.io.getStdOut().writer().print("{d}\n", .{rows});
         return;
     }
-    const filerootPageOffset = rootPage * globals.SQLITE_DEFAULT_PAGE_SIZE;
+    std.debug.print("Rows in table {s}: is rootPage {d}\n", .{ table_name, rootPage });
+    const filerootPageOffset = (rootPage - 1) * globals.SQLITE_DEFAULT_PAGE_SIZE;
+    std.debug.print("filerootPageOffset: {d}\n", .{filerootPageOffset});
     try file.seekTo(filerootPageOffset);
     var buf: [globals.SQLITE_DEFAULT_PAGE_SIZE]u8 = undefined;
     _ = try file.read(&buf);
+    std.debug.print("Read {d} bytes from file at offset {d}\n", .{ buf.len, filerootPageOffset });
     var root_page_content = try Buffer.init(&buf, allocator);
     defer root_page_content.deinit();
     var page_content = PageContent{
@@ -98,12 +101,15 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         .buffer = root_page_content,
     };
     defer page_content.deinit();
-    parse_page_rows(page_content);
+    try parse_page_rows(page_content);
 }
 
-fn parse_page_rows(page_content: PageContent) void {
+fn parse_page_rows(page_content: PageContent) !void {
     // TODO: Implement row parsing logic
-    std.debug.print("page_content offset: {}\n", .{page_content.offset});
+    const cellpointers = try page_content.getCellPointerArray();
+    std.debug.print("Cell pointers: {any}\n", .{cellpointers});
+    const rows = try page_content.getRows();
+    std.debug.print("Rows: {d}\n", .{rows.len});
 }
 
 fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {

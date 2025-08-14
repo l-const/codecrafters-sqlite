@@ -1,6 +1,12 @@
 const std = @import("std");
+const readVarIntFromSlice = @import("./varint.zig").readVarIntFromSlice;
+const varint_byte_count = @import("./varint.zig").varint_byte_count;
+const serialTypeToContentSize = @import("./utils.zig").serialTypeToContentSize;
+
+const allocator = @import("./globals.zig").allocator;
 const ROOT_CELL_SIZE_OFFSET: u16 = @import("./globals.zig").ROOT_CELL_SIZE_OFFSET;
 const SQLITE_DEFAULT_PAGE_SIZE = @import("./globals.zig").SQLITE_DEFAULT_PAGE_SIZE;
+const PAGE_HEADER_TABLE_LEAF_SIZE = @import("./globals.zig").PAGE_HEADER_TABLE_LEAF_SIZE;
 const CELL_PTR_SIZE_BYTES = 2; // Size of a cell pointer in bytes
 const DataBaseHeader = struct {
     magic: [16]u8, // 16 bytes
@@ -246,10 +252,10 @@ pub const Buffer = struct {
 
     const Self = @This();
 
-    pub fn init(data: []const u8, allocator: std.mem.Allocator) !Buffer {
-        const owned_data = try allocator.alloc(u8, data.len);
+    pub fn init(data: []const u8, alloc: std.mem.Allocator) !Buffer {
+        const owned_data = try alloc.alloc(u8, data.len);
         @memcpy(owned_data, data);
-        return Buffer{ .data = owned_data, .allocator = allocator };
+        return Buffer{ .data = owned_data, .allocator = alloc };
     }
 
     pub fn deinit(self: *Self) void {
@@ -259,6 +265,15 @@ pub const Buffer = struct {
     pub fn asSlice(self: *const Self) []const u8 {
         return self.data;
     }
+};
+
+pub const Row = struct {
+    rowId: u64, // Row ID
+    payloadSize: u64, // Size of the payload
+    payload: []const u8, // The payload data , contains header size , headers and body
+    headerSizes: []u64, // Sizes of the headers for each column
+    record_body: []const u8, // The body of the record as a whole not separated into fields
+    fields: [][]const u8, // The fields of the record
 };
 
 pub const PageContent = struct {
@@ -324,6 +339,16 @@ pub const PageContent = struct {
         return readBigEndian(u32, self.asSlice()[index .. index + 4]);
     }
 
+    pub fn read_varint_at(self: *const Self, index: usize) u64 {
+        std.debug.print("index: {d}, slice: {any}\n", .{ index, self.asSlice().len });
+        std.debug.assert(self.buffer.?.asSlice().len > index);
+        if (index >= self.asSlice().len) {
+            @panic("Index out of bounds");
+        }
+        const result = readVarIntFromSlice(self.asSlice()[index..]) catch 0;
+        return result;
+    }
+
     pub fn getPageType(self: *const Self) PageType {
         return @enumFromInt(self.asSlice()[self.offset + 0]);
     }
@@ -335,6 +360,89 @@ pub const PageContent = struct {
     pub fn cell_pointer_array_size(self: *const Self) usize {
         // The size of the cell pointer array is the number of cells times the size of a cell pointer
         return self.cell_count() * CELL_PTR_SIZE_BYTES;
+    }
+
+    pub fn getCellPointerArray(self: *const Self) ![]u16 {
+        const cell_counter = self.cell_count();
+        var cell_pointers = try std.ArrayList(u16).initCapacity(allocator, cell_counter);
+        defer cell_pointers.deinit();
+
+        // Read the cell pointers from the page content
+        for (0..cell_counter) |i| {
+            const offset = self.read_u16(PAGE_HEADER_TABLE_LEAF_SIZE + i * CELL_PTR_SIZE_BYTES);
+            std.debug.print("Cell pointer {d}: {d}\n", .{ i, offset });
+            _ = try cell_pointers.append(offset);
+        }
+
+        return cell_pointers.toOwnedSlice();
+    }
+
+    pub fn getRows(self: *const Self) ![]Row {
+        const pointerArray = try self.getCellPointerArray();
+        // defer pointerArray.deinit();
+        // Here you can process the rows as needed
+        var rows = try std.ArrayList(Row).initCapacity(allocator, pointerArray.len);
+        defer rows.deinit();
+        for (0..pointerArray.len) |i| {
+            const rowOffset = pointerArray[i];
+            std.debug.print("Processing row at offset {d}\n", .{rowOffset});
+            // Process each row
+            std.debug.print("Row {d}: {d}\n", .{ i, rowOffset });
+            const payloadSize = self.read_varint_at(rowOffset);
+            std.debug.print("Payload size for row {d}: {d}\n", .{ i, payloadSize });
+            const rowIdStart = rowOffset + varint_byte_count(payloadSize);
+            const rowId = self.read_varint_at(rowIdStart);
+            std.debug.print("Row ID for row {d}: {d}\n", .{ i, rowId });
+            const recordHeaderSizeStart = rowIdStart + varint_byte_count(rowId);
+            std.debug.print("Record header size start for row {d}: {d}\n", .{ i, recordHeaderSizeStart });
+            const recordHeaderSize = self.read_varint_at(recordHeaderSizeStart);
+            std.debug.print("Record header size for row {d}: {d}\n", .{ i, recordHeaderSize });
+            const recordHeaderStart = recordHeaderSizeStart + varint_byte_count(recordHeaderSize);
+            std.debug.print("Record header start for row {d}: {d}\n", .{ i, recordHeaderStart });
+            var headerSizes = try std.ArrayList(u64).initCapacity(allocator, 1);
+            var bytes_read: u16 = 0;
+            var offsetStart = recordHeaderStart;
+            while (bytes_read < recordHeaderSize) {
+                const headerSize = self.read_varint_at(offsetStart);
+                std.debug.print("Header size for row {d}: {d}\n", .{ i, headerSize });
+                _ = try headerSizes.append(serialTypeToContentSize(headerSize));
+                bytes_read += varint_byte_count(headerSize);
+                offsetStart += 1;
+            }
+            const payloadBytesRead = recordHeaderSize;
+            const recordBodyStart = recordHeaderStart + payloadBytesRead - 1;
+            var bytes_of_body_read: u64 = 0;
+            for (0..headerSizes.items.len - 1) |k| {
+                std.debug.print("Header size {d}: {d}\n", .{ k, headerSizes.items[k] });
+                bytes_of_body_read += headerSizes.items[k];
+            }
+            const body_row_size = bytes_of_body_read;
+            var fields = try std.ArrayList([]const u8).initCapacity(allocator, 1);
+            var j: u16 = 0;
+            var offset = recordBodyStart;
+            bytes_of_body_read = 0;
+            while (bytes_of_body_read < body_row_size) {
+                std.debug.print("Reading field {d} at offset {d} headerSize: {d}\n", .{ j, offset, headerSizes.items[j] });
+                const field = self.asSlice()[offset .. offset + headerSizes.items[j]];
+                bytes_of_body_read += field.len;
+                try fields.append(field);
+                offset += headerSizes.items[j];
+                std.debug.print("Field {d}: , offset: {d}\n", .{ j, offset });
+
+                j += 1;
+            }
+            const row = Row{
+                .rowId = rowId,
+                .payloadSize = payloadSize,
+                .payload = self.asSlice()[recordHeaderSizeStart .. recordHeaderSizeStart + payloadSize],
+                .headerSizes = headerSizes.items,
+                .record_body = self.asSlice()[recordBodyStart .. recordBodyStart + body_row_size],
+                .fields = fields.items,
+            };
+            _ = try rows.append(row);
+            std.debug.print("Payload size for row {d}: {d}\n", .{ i, payloadSize });
+        }
+        return rows.items;
     }
 };
 
