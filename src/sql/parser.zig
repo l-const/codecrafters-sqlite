@@ -255,3 +255,22 @@ test "parse CREATE TABLE statement" {
     try std.testing.expect(std.mem.eql(u8, create.columns.items[1].name, "name"));
     try std.testing.expect(create.columns.items[1].typ == SQLiteColumnType.Text);
 }
+
+test "parse CREATE TABLE with autoincrement statement" {
+    const input = "CREATE TABLE oranges (    id integer primary key autoincrement,   name text, description text )";
+    const allocator = std.testing.allocator;
+    var parser = try SQLParser.init(input, allocator);
+    defer parser.deinit();
+    var stmt = try parser.parse(null);
+    defer stmt.deinit();
+    try std.testing.expect(stmt == StatementType.CreateTable);
+    const create = stmt.CreateTable;
+    try std.testing.expect(std.mem.eql(u8, create.table, "oranges"));
+    try std.testing.expect(create.columns.items.len == 3);
+    try std.testing.expect(std.mem.eql(u8, create.columns.items[0].name, "id"));
+    try std.testing.expect(create.columns.items[0].typ == SQLiteColumnType.Integer);
+    try std.testing.expect(std.mem.eql(u8, create.columns.items[1].name, "name"));
+    try std.testing.expect(create.columns.items[1].typ == SQLiteColumnType.Text);
+    try std.testing.expect(std.mem.eql(u8, create.columns.items[2].name, "description"));
+    try std.testing.expect(create.columns.items[2].typ == SQLiteColumnType.Text);
+}

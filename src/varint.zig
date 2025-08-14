@@ -33,6 +33,7 @@ pub fn readVarInt(file: *std.fs.File) !u64 {
 }
 
 pub fn varint_byte_count(value: u64) u8 {
+    if (value == 0) return 1; // 0 is encoded as a single byte
     if (value <= 0x7f) return 1; // 1 byte for values <= 127
     if (value <= 0x3fff) return 2; // 2 bytes for values <= 16383
     var n: u8 = 1;

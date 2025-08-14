@@ -2,7 +2,9 @@ const std = @import("std");
 const Parser = @import("./parser.zig");
 const globals = @import("./globals.zig");
 const sqlparser = @import("./sql/parser.zig");
+const Column = sqlparser.Column;
 const Buffer = @import("./types.zig").Buffer;
+const Row = @import("./types.zig").Row;
 const PageContent = @import("./types.zig").PageContent;
 const readVarInt = @import("./varint.zig").readVarInt;
 const varint_byte_count = @import("./varint.zig").varint_byte_count;
@@ -79,7 +81,13 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     var lowercase: []u8 = try allocator.alloc(u8, table_name.len);
     defer allocator.free(lowercase);
     lowercase = std.ascii.lowerString(lowercase, duped_table_name);
-    const rootPage = try find_table_root_page(file, lowercase);
+    const rootPageSql = try find_table_root_page(file, lowercase);
+    const rootPage = rootPageSql.root_page;
+    const table_schema = rootPageSql.sql;
+    // const trimmed_table_schema = std.mem.trim(u8, table_schema, " \n\r\t");
+    // const final_schema = trimmed_table_schema;
+    // // Use final_schema wherever you need the schema without whitespace
+    // std.debug.print("Table schema: {s}\n", .{final_schema});
     var parser = Parser.init(@constCast(&file));
     const cellPointers = try parser.parse_cellpointer_array(rootPage);
     const rows = cellPointers.get_size();
@@ -87,13 +95,25 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         try std.io.getStdOut().writer().print("{d}\n", .{rows});
         return;
     }
-    std.debug.print("Rows in table {s}: is rootPage {d}\n", .{ table_name, rootPage });
+    // Find columns in the select statement if any
+    const select_columns = statement.Select.columns;
+    // std.debug.print("Column(s) in select: ", .{});
+    for (select_columns.items) |column| {
+        std.debug.print("{s} ", .{column});
+    }
+    std.debug.print("\n", .{});
+
+    sqlParser = try sqlparser.SQLParser.init(table_schema, allocator);
+    const stmt = try sqlParser.parse(null);
+    const create_stmt = stmt.CreateTable;
+    const table_columns: std.ArrayList(Column) = create_stmt.columns;
+    // std.debug.print("Rows in table {s}: is rootPage {d}\n", .{ table_name, rootPage });
     const filerootPageOffset = (rootPage - 1) * globals.SQLITE_DEFAULT_PAGE_SIZE;
-    std.debug.print("filerootPageOffset: {d}\n", .{filerootPageOffset});
+    // std.debug.print("filerootPageOffset: {d}\n", .{filerootPageOffset});
     try file.seekTo(filerootPageOffset);
     var buf: [globals.SQLITE_DEFAULT_PAGE_SIZE]u8 = undefined;
     _ = try file.read(&buf);
-    std.debug.print("Read {d} bytes from file at offset {d}\n", .{ buf.len, filerootPageOffset });
+    // std.debug.print("Read {d} bytes from file at offset {d}\n", .{ buf.len, filerootPageOffset });
     var root_page_content = try Buffer.init(&buf, allocator);
     defer root_page_content.deinit();
     var page_content = PageContent{
@@ -101,18 +121,70 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         .buffer = root_page_content,
     };
     defer page_content.deinit();
-    try parse_page_rows(page_content);
+    try parse_page_rows(page_content, table_columns.items, select_columns.items[0]);
 }
 
-fn parse_page_rows(page_content: PageContent) !void {
-    // TODO: Implement row parsing logic
-    const cellpointers = try page_content.getCellPointerArray();
-    std.debug.print("Cell pointers: {any}\n", .{cellpointers});
-    const rows = try page_content.getRows();
-    std.debug.print("Rows: {d}\n", .{rows.len});
+fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_column: []const u8) !void {
+    const rowsList = try page_content.getRows();
+    const rows = rowsList.items;
+
+    // Build a list of column names
+    var column_names = std.ArrayList([]const u8).init(allocator);
+    defer column_names.deinit();
+    for (table_columns) |column| {
+        try column_names.append(column.name);
+    }
+
+    // Find the index of select_column in column_names
+    var selected_column_index: ?usize = null;
+    for (column_names.items, 0..) |col_name, idx| {
+        if (std.mem.eql(u8, select_column, col_name)) {
+            selected_column_index = idx;
+            break;
+        }
+    }
+    if (selected_column_index == null) {
+        std.debug.print("Selected column not found\n", .{});
+        return;
+    }
+    var columnIndexs = [_]u64{@as(u64, selected_column_index.?)}; // array
+    const columnIndexs_slice: []u64 = columnIndexs[0..]; // slice
+
+    // Now use columnIndexs in format_output_row
+    for (0..rows.len) |i| {
+        const row = rows[i];
+        try format_output_row(row, columnIndexs_slice);
+    }
 }
 
-fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
+fn format_output_row(row: Row, columnIndexs: []u64) !void {
+    if (columnIndexs.len > 0) {
+        std.debug.assert(columnIndexs.len > 0);
+    }
+    // TODO: Implement row formatting logic
+    // read the row Id from that field as the first field is null on cell
+    const rowId = row.rowId;
+    const stdOutWriter = std.io.getStdOut().writer();
+    // rowId is the first field, so we print it first
+    if (std.mem.indexOf(u64, columnIndexs, &[_]u64{0}) != null) try stdOutWriter.print("{d}", .{rowId});
+    for (1..row.fields.len) |i| {
+        // const field = row.fields[i];
+        if (row.fields.len > i) {
+            // TODO: Implement column-based formatting logic
+            if (columnIndexs.len > 0 and std.mem.indexOf(u64, columnIndexs, &[_]u64{i}) == null) {
+                continue; // Skip this field if it's not in the columnIndexs
+            }
+            const field = row.fields[i];
+            try stdOutWriter.print("{s}", .{field});
+            // try stdOutWriter.print("|{s}", .{field});
+        } else {
+            try stdOutWriter.print("NULL ", .{});
+        }
+    }
+    try stdOutWriter.print("\n", .{});
+}
+
+fn find_table_root_page(file: std.fs.File, table_name: []const u8) !struct { root_page: u32, sql: []const u8 } {
     const filePtr = @constCast(&file);
     var parser = Parser.init(filePtr);
     const cellPointers = try parser.parse_cellpointer_array(1);
@@ -121,6 +193,7 @@ fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
         try readRootPageRecords(filePtr, cellPointers.get_cells_pointers(), TableCellType.Leaf);
     const table_names = tableRootPages.tables;
     const root_pages = tableRootPages.rootPages;
+    const sqls = tableRootPages.sqls;
     var index: ?usize = null;
     for (table_names.items, 0..) |item, i| {
         if (std.mem.eql(u8, item, table_name)) {
@@ -128,8 +201,8 @@ fn find_table_root_page(file: std.fs.File, table_name: []const u8) !u32 {
             break;
         }
     }
-    if (index == null) return 0;
-    return root_pages.items[index.?];
+    if (index == null) return error.TableNotFound;
+    return .{ .root_page = root_pages.items[index.?], .sql = sqls.items[index.?] };
 }
 
 fn openDbFile(file_path: []const u8) !std.fs.File {
@@ -214,15 +287,6 @@ const TableRootPages = struct {
     sqls: std.ArrayList([]const u8), // List of SQL CREATE statements - SCHEMAS
     rootPages: std.ArrayList(u32), // List of root page numbers
 };
-
-fn readRecords(page_content: PageContent) void {
-    // Implement the logic to read records from the database file
-    // This is a placeholder for the actual implementation
-    const page_type = page_content.getPageType();
-    const is_leaf = page_type.is_leaf();
-    const is_table = page_type.is_table();
-    std.debug.print("Reading records for page type: is_leaf: {any}, is_table: {any} \n", .{ is_leaf, is_table });
-}
 
 fn readRootPageRecords(file: *std.fs.File, cell_offsets: []u16, cellType: TableCellType) !TableRootPages {
     var table_names = std.ArrayList([]const u8).init(allocator);
