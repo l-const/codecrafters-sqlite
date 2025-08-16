@@ -114,12 +114,60 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         .buffer = root_page_content,
     };
     defer page_content.deinit();
-    try parse_page_rows(page_content, table_columns.items, select_columns.items);
+    var where_clause: ?sqlparser.WhereClause = null;
+
+    if (statement.Select.where_clause) |where| {
+        where_clause = where;
+    }
+    try parse_page_rows(page_content, table_columns.items, select_columns.items, where_clause);
 }
 
-fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_columns: [][]const u8) !void {
+fn filter_rows(rows: []Row, where_clause: sqlparser.WhereClause, schema_columns: []const Column) ![]Row {
+    // This function is a placeholder for filtering rows based on the WHERE clause.
+    // The actual implementation will depend on the structure of the WHERE clause
+    // and how it should be applied to the rows.
+    // For now, it does nothing.
+    // find index of where_clause column in schema_columns
+    var where_column_index: ?usize = null;
+    for (schema_columns, 0..schema_columns.len) |col, idx| {
+        if (std.mem.eql(u8, col.name, where_clause.column)) {
+            where_column_index = idx;
+            break;
+        }
+    }
+    if (where_column_index == null) return error.OutOfBounds;
+
+    var filtered_rows = std.ArrayList(Row).init(allocator);
+    // Filter rows based on the WHERE clause
+    for (rows) |row| {
+        const value = row.fields[where_column_index.?];
+        if (where_clause.operator == sqlparser.Operator.Equal) {
+            if (!std.mem.eql(u8, value, where_clause.value)) {
+                // Skip this row
+                continue;
+            }
+        } else if (where_clause.operator == sqlparser.Operator.NotEqual) {
+            if (std.mem.eql(u8, value, where_clause.value)) {
+                // Skip this row
+                continue;
+            }
+        }
+        // If we reach here, the row matches the WHERE clause
+        // Do something with the matching row
+        // return row; // This is just a placeholder
+        try filtered_rows.append(row);
+    }
+    return filtered_rows.toOwnedSlice();
+}
+
+fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_columns: [][]const u8, where_clause: ?sqlparser.WhereClause) !void {
     const rowsList = try page_content.getRows();
-    const rows = rowsList.items;
+    var rows = rowsList.items;
+
+    // If a WHERE clause is provided, filter the rows based on it
+    if (where_clause) |where| {
+        rows = try filter_rows(rows, where, table_columns);
+    }
 
     // Build a list of column names
     var column_names = std.ArrayList([]const u8).init(allocator);

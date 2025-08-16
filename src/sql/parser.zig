@@ -23,11 +23,22 @@ pub const Column = struct {
     typ: SQLiteColumnType,
 };
 
+pub const WhereClause = struct {
+    column: []const u8,
+    operator: Operator,
+    value: []const u8,
+};
+
+pub const Operator = enum {
+    Equal,
+    NotEqual,
+};
+
 pub const SelectStatement = struct {
     columns: std.ArrayList([]const u8),
     is_count: bool = false, // Indicates if the SELECT statement is an aggregate query
     // functions: std.ArrayList([]const u8), // List of functions applied to columns, e.g., COUNT, SUM
-
+    where_clause: ?WhereClause = null, // Optional WHERE clause
     // functions_to_columns: std.AutoHashMap([]const u8, std.ArrayList([]const u8)),
     table: []const u8,
 
@@ -96,10 +107,8 @@ pub const SQLParser = struct {
     }
 
     fn parse_select(self: *Self) !Statement {
-        // Parse SELECT <columns> FROM <table>
         var columns = std.ArrayList([]const u8).init(self.allocator);
         var is_count = false;
-        // defer columns.deinit();
         var next = try self.lexer.nextToken();
 
         // SPECIAL CASE: Handle COUNT(*) syntax
@@ -130,11 +139,56 @@ pub const SQLParser = struct {
             next = try self.lexer.nextToken();
         }
 
+        var where_clause: ?WhereClause = null;
+
         if (next.typ == TokenType.Keyword and std.ascii.eqlIgnoreCase(next.value, "FROM")) {
             next = try self.lexer.nextToken();
             if (next.typ == TokenType.Identifier) {
                 const table = next.value;
-                return Statement{ .Select = SelectStatement{ .columns = columns, .is_count = is_count, .table = table } };
+                next = try self.lexer.nextToken();
+
+                // Parse WHERE clause if present
+                while (next.typ != TokenType.EOF) {
+                    if (next.typ == TokenType.Keyword and std.ascii.eqlIgnoreCase(next.value, "WHERE")) {
+                        next = try self.lexer.nextToken();
+                        if (next.typ == TokenType.Identifier) {
+                            const column = next.value;
+                            next = try self.lexer.nextToken();
+                            var op: Operator = Operator.Equal;
+                            if (next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, "=")) {
+                                op = Operator.Equal;
+                            } else if (next.typ == TokenType.Symbol and std.mem.eql(u8, next.value, "!=")) {
+                                op = Operator.NotEqual;
+                            } else {
+                                return Statement{ .Unknown = {} };
+                            }
+                            next = try self.lexer.nextToken();
+                            if (next.typ == TokenType.Identifier or next.typ == TokenType.String) {
+                                const value = next.value;
+                                where_clause = WhereClause{
+                                    .column = column,
+                                    .operator = op,
+                                    .value = value,
+                                };
+                            } else {
+                                return Statement{ .Unknown = {} };
+                            }
+                            next = try self.lexer.nextToken();
+                        } else {
+                            return Statement{ .Unknown = {} };
+                        }
+                    } else {
+                        // Skip other tokens (e.g., ORDER BY, LIMIT, etc.)
+                        next = try self.lexer.nextToken();
+                    }
+                }
+
+                return Statement{ .Select = SelectStatement{
+                    .columns = columns,
+                    .is_count = is_count,
+                    .table = table,
+                    .where_clause = where_clause,
+                } };
             }
         }
         return Statement{ .Unknown = {} };
@@ -222,6 +276,24 @@ test "parse SELECT statement" {
     try std.testing.expect(std.mem.eql(u8, select.columns.items[0], "name"));
     try std.testing.expect(std.mem.eql(u8, select.columns.items[1], "age"));
     try std.testing.expect(std.mem.eql(u8, select.table, "apples"));
+}
+
+test "parse SELECT with WHERE clause" {
+    const input = "SELECT name FROM apples WHERE color = 'Yellow'";
+    const allocator = std.testing.allocator;
+    var parser = try SQLParser.init(input, allocator);
+    defer parser.deinit();
+    var stmt = try parser.parse(null);
+    defer stmt.deinit();
+    try std.testing.expect(stmt == StatementType.Select);
+    const select = stmt.Select;
+    try std.testing.expect(std.mem.eql(u8, select.columns.items[0], "name"));
+    try std.testing.expect(std.mem.eql(u8, select.table, "apples"));
+    try std.testing.expect(select.where_clause != null);
+    const where = select.where_clause.?;
+    try std.testing.expect(std.mem.eql(u8, where.column, "color"));
+    try std.testing.expect(where.operator == Operator.Equal);
+    try std.testing.expect(std.mem.eql(u8, where.value, "Yellow"));
 }
 
 test "parse COUNT(*) SELECT statement" {

@@ -215,6 +215,45 @@ test "tokenize_count_star - SELECT COUNT(*) FROM APPLES" {
     try std.testing.expect(std.mem.eql(u8, token.value, "APPLES"));
 }
 
+test "tokenize select with a WHERE clause" {
+    const input = "SELECT * FROM APPLES WHERE color = 'Yellow'";
+    const allocator = std.testing.allocator;
+    var lexer = try Lexer.init(input, allocator);
+    defer lexer.deinit(allocator);
+
+    var token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "SELECT"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, "*"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "FROM"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "APPLES"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "WHERE"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "color"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, "="));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.String);
+    try std.testing.expect(std.mem.eql(u8, token.value, "Yellow"));
+}
+
 test "basic CREATE TABLE with symbol checks" {
     const input = "CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)";
     const allocator = std.testing.allocator;
