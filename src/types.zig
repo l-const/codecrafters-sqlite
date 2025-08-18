@@ -7,6 +7,7 @@ const allocator = @import("./globals.zig").allocator;
 const ROOT_CELL_SIZE_OFFSET: u16 = @import("./globals.zig").ROOT_CELL_SIZE_OFFSET;
 const SQLITE_DEFAULT_PAGE_SIZE = @import("./globals.zig").SQLITE_DEFAULT_PAGE_SIZE;
 const PAGE_HEADER_TABLE_LEAF_SIZE = @import("./globals.zig").PAGE_HEADER_TABLE_LEAF_SIZE;
+const PAGE_HEADER_TABLE_INTERIOR_SIZE = @import("./globals.zig").PAGE_HEADER_TABLE_INTERIOR_SIZE;
 const CELL_PTR_SIZE_BYTES = 2; // Size of a cell pointer in bytes
 const DataBaseHeader = struct {
     magic: [16]u8, // 16 bytes
@@ -353,6 +354,14 @@ pub const PageContent = struct {
         return @enumFromInt(self.asSlice()[self.offset + 0]);
     }
 
+    pub fn getHeaderSize(self: *const Self) u16 {
+        // The header size is stored at offset 2 in the page content
+        switch (self.getPageType()) {
+            .IndexInterior, .TableInterior => return PAGE_HEADER_TABLE_INTERIOR_SIZE,
+            .IndexLeaf, .TableLeaf => return PAGE_HEADER_TABLE_LEAF_SIZE,
+        }
+    }
+
     pub fn cell_count(self: *const Self) u16 {
         return self.read_u16(3);
     }
@@ -360,6 +369,30 @@ pub const PageContent = struct {
     pub fn cell_pointer_array_size(self: *const Self) usize {
         // The size of the cell pointer array is the number of cells times the size of a cell pointer
         return self.cell_count() * CELL_PTR_SIZE_BYTES;
+    }
+
+    pub fn cell_table_interior_read_left_child_page(self: *const Self, rowid_offset: usize) u64 {
+        std.debug.assert(!self.getPageType().is_leaf());
+        // Read the row ID from the cell pointer array at the given offset
+        const cell_pointer_array_start = self.getHeaderSize();
+
+        const cell_pointer_offset = cell_pointer_array_start + (rowid_offset * CELL_PTR_SIZE_BYTES);
+        const cell_pointer = self.read_u16(cell_pointer_offset);
+        return self.read_u32(cell_pointer);
+    }
+
+    pub fn cell_table_interior_read_left_rowid(self: *const Self, rowid_offset: usize) u64 {
+        std.debug.assert(!self.getPageType().is_leaf());
+        // Read the row ID from the cell pointer array at the given offset
+        const cell_pointer_array_start = self.getHeaderSize();
+
+        const cell_pointer_offset = cell_pointer_array_start + (rowid_offset * CELL_PTR_SIZE_BYTES);
+        const cell_pointer = self.read_u16(cell_pointer_offset);
+        const CHILD_PAGE_SIZE_BYTES = 4;
+        const rowid_start = cell_pointer + CHILD_PAGE_SIZE_BYTES;
+        const rowid = self.read_varint_at(rowid_start);
+        // std.debug.print("Row ID at offset {d}: {d}\n", .{ rowid_offset, rowid });
+        return rowid;
     }
 
     pub fn getCellPointerArray(self: *const Self) ![]u16 {

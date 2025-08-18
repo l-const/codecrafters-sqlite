@@ -93,11 +93,6 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     }
     // Find columns in the select statement if any
     const select_columns = statement.Select.columns;
-    // std.debug.print("Column(s) in select: ", .{});
-    // for (select_columns.items) |column| {
-    //     std.debug.print("{s} ", .{column});
-    // }
-    // std.debug.print("\n", .{});
 
     sqlParser = try sqlparser.SQLParser.init(table_schema, allocator);
     const stmt = try sqlParser.parse(null);
@@ -109,17 +104,65 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     _ = try file.read(&buf);
     var root_page_content = try Buffer.init(&buf, allocator);
     defer root_page_content.deinit();
+
+    // Create a PageContent instance for the root page
     var page_content = PageContent{
         .offset = 0,
         .buffer = root_page_content,
     };
     defer page_content.deinit();
+
+    // Add a table scan - more than one page for each table
+    // traverse the pages and potentially interior table Pages
+    const table_rows = try table_scan(page_content, file);
+    // return;
+
     var where_clause: ?sqlparser.WhereClause = null;
 
     if (statement.Select.where_clause) |where| {
         where_clause = where;
     }
-    try parse_page_rows(page_content, table_columns.items, select_columns.items, where_clause);
+    try parse_page_rows(table_rows, table_columns.items, select_columns.items, where_clause);
+}
+
+fn table_scan(root_page_content: PageContent, file: std.fs.File) ![]Row {
+    var rows = std.ArrayList(Row).init(allocator);
+    defer rows.deinit();
+
+    try scan_page_recursive(root_page_content, &rows, file);
+
+    return rows.toOwnedSlice();
+}
+
+fn scan_page_recursive(page_content: PageContent, rows: *std.ArrayList(Row), file: std.fs.File) !void {
+    if (page_content.getPageType().is_leaf()) {
+        // Collect rows from this leaf page
+        const page_rows = try page_content.getRows();
+        for (page_rows.items) |row| {
+            try rows.append(row);
+        }
+    } else {
+        // Interior page: scan left child pages recursively
+        const cell_count = page_content.cell_count();
+        for (0..cell_count - 1) |i| {
+            const left_child_page_id = page_content.cell_table_interior_read_left_child_page(i + 1);
+            // std.debug.print("Left child page ID: {d}\n", .{left_child_page_id});
+            // Load the buffer for the child page (you may need to read from file here)
+            var child_page_content = try getPageContentForId(left_child_page_id, file);
+            defer child_page_content.deinit();
+
+            try scan_page_recursive(child_page_content, rows, file);
+        }
+    }
+}
+
+// You need to implement this function to read a page from disk:
+fn getPageContentForId(page_id: u64, file: std.fs.File) !PageContent {
+    var buf: [globals.SQLITE_DEFAULT_PAGE_SIZE]u8 = undefined;
+    try file.seekTo((page_id - 1) * globals.SQLITE_DEFAULT_PAGE_SIZE);
+    _ = try file.read(&buf);
+    const buffer = try Buffer.init(&buf, allocator);
+    return PageContent{ .offset = 0, .buffer = buffer };
 }
 
 fn filter_rows(rows: []Row, where_clause: sqlparser.WhereClause, schema_columns: []const Column) ![]Row {
@@ -131,6 +174,7 @@ fn filter_rows(rows: []Row, where_clause: sqlparser.WhereClause, schema_columns:
     var where_column_index: ?usize = null;
     for (schema_columns, 0..schema_columns.len) |col, idx| {
         if (std.mem.eql(u8, col.name, where_clause.column)) {
+            // std.debug.print("Found WHERE clause column: {s}\n", .{col.name});
             where_column_index = idx;
             break;
         }
@@ -139,7 +183,13 @@ fn filter_rows(rows: []Row, where_clause: sqlparser.WhereClause, schema_columns:
 
     var filtered_rows = std.ArrayList(Row).init(allocator);
     // Filter rows based on the WHERE clause
+    // std.debug.print("Filtering rows based on WHERE clause: {s} {s}\n", .{ where_clause.column, where_clause.value });
+    // std.debug.print("Number of fields per row: {d}\n", .{rows[0].fields.len});
     for (rows) |row| {
+        if (where_column_index.? >= row.fields.len) {
+            // std.debug.print("Row does not have enough fields: {d} fields, expected at least {d}\n", .{ row.fields.len, where_column_index.? + 1 });
+            continue; // Skip this row if it doesn't have enough fields
+        }
         const value = row.fields[where_column_index.?];
         if (where_clause.operator == sqlparser.Operator.Equal) {
             if (!std.mem.eql(u8, value, where_clause.value)) {
@@ -160,9 +210,9 @@ fn filter_rows(rows: []Row, where_clause: sqlparser.WhereClause, schema_columns:
     return filtered_rows.toOwnedSlice();
 }
 
-fn parse_page_rows(page_content: PageContent, table_columns: []const Column, select_columns: [][]const u8, where_clause: ?sqlparser.WhereClause) !void {
-    const rowsList = try page_content.getRows();
-    var rows = rowsList.items;
+fn parse_page_rows(input_rows: []Row, table_columns: []const Column, select_columns: [][]const u8, where_clause: ?sqlparser.WhereClause) !void {
+    // const rowsList = try page_content.getRows();
+    var rows = input_rows;
 
     // If a WHERE clause is provided, filter the rows based on it
     if (where_clause) |where| {

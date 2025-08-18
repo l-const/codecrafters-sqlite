@@ -87,7 +87,7 @@ pub const Lexer = struct {
                 }
                 const value = self.input[start..self.pos];
                 // SQLite keywords (partial)
-                const keywords = [_][]const u8{ "SELECT", "COUNT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX", "INTO", "VALUES", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "INTEGER", "TEXT", "REAL", "BLOB", "AUTOINCREMENT" };
+                const keywords = [_][]const u8{ "SELECT", "COUNT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX", "INTO", "VALUES", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "INTEGER", "TEXT", "REAL", "BLOB", "AUTOINCREMENT", "IF", "NOT", "EXISTS" };
                 for (keywords) |kw| {
                     if (std.ascii.eqlIgnoreCase(value, kw)) {
                         return Token{ .typ = TokenType.Keyword, .value = value };
@@ -313,6 +313,149 @@ test "basic CREATE TABLE with symbol checks" {
     try std.testing.expect(std.mem.eql(u8, token.value, "TEXT"));
 
     // Check for right parenthesis
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ")"));
+
+    // Should be EOF now
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.EOF);
+}
+
+test "CREATE TABLE IF NOT EXISTS superheroes" {
+    const input = "CREATE TABLE IF NOT EXISTS \"superheroes\" (id integer primary key autoincrement, name text not null, eye_color text, hair_color text, appearance_count integer, first_appearance text, first_appearance_year text)";
+    const allocator = std.testing.allocator;
+    var lexer = try Lexer.init(input, allocator);
+    defer lexer.deinit(allocator);
+
+    var token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "CREATE"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "TABLE"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "IF"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "NOT"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "EXISTS"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.String);
+    try std.testing.expect(std.mem.eql(u8, token.value, "superheroes"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, "("));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "id"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "integer"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "primary"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "key"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "autoincrement"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "name"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "text"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "not"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "null"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "eye_color"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "text"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "hair_color"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "text"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "appearance_count"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "integer"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "first_appearance"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "text"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Symbol);
+    try std.testing.expect(std.mem.eql(u8, token.value, ","));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Identifier);
+    try std.testing.expect(std.mem.eql(u8, token.value, "first_appearance_year"));
+
+    token = try lexer.nextToken();
+    try std.testing.expectEqual(token.typ, TokenType.Keyword);
+    try std.testing.expect(std.mem.eql(u8, token.value, "text"));
+
     token = try lexer.nextToken();
     try std.testing.expectEqual(token.typ, TokenType.Symbol);
     try std.testing.expect(std.mem.eql(u8, token.value, ")"));
