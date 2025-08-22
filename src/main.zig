@@ -67,6 +67,12 @@ test "Run command with a valid database file and query" {
     try run(db_path, command);
 }
 
+test "Index scan test" {
+    const db_path = "companies.db"; // Replace with a valid database file path
+    const command = "SELECT name FROM companies WHERE country = 'eritrea'"; // Replace with a valid SQL query that would use an index
+    try run(db_path, command);
+}
+
 fn handle_query(file: std.fs.File, command: []const u8) !void {
     var sqlParser = try sqlparser.SQLParser.init(command, allocator);
     defer sqlParser.deinit();
@@ -84,6 +90,7 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     const rootPageSql = try find_table_root_page(file, lowercase);
     const rootPage = rootPageSql.root_page;
     const table_schema = rootPageSql.sql;
+    const indexExists = rootPageSql.index_root_page != null;
     var parser = Parser.init(@constCast(&file));
     const cellPointers = try parser.parse_cellpointer_array(rootPage);
     const rows = cellPointers.get_size();
@@ -106,16 +113,24 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
     defer root_page_content.deinit();
 
     // Create a PageContent instance for the root page
-    var page_content = PageContent{
+    var table_page_content = PageContent{
         .offset = 0,
         .buffer = root_page_content,
     };
-    defer page_content.deinit();
-
-    // Add a table scan - more than one page for each table
-    // traverse the pages and potentially interior table Pages
-    const table_rows = try table_scan(page_content, file);
-    // return;
+    defer table_page_content.deinit();
+    var table_rows: []Row = undefined;
+    // Index scan implementation placeholder
+    if (indexExists) {
+        const indexRootPage = rootPageSql.index_root_page.?;
+        std.debug.print("Index exists for table {s} with root page: {d}, but index scan is not implemented yet.\n", .{ table_name, indexRootPage });
+        var index_page_content = try getPageContentForId(indexRootPage, file);
+        defer index_page_content.deinit();
+        _ = try index_scan(index_page_content, file);
+        return;
+    } else { // PLAIN FULL TABLE SCAN
+        // std.debug.print("No index exists for table {s}, performing table scan.\n", .{table_name});
+        table_rows = try table_scan(table_page_content, file);
+    }
 
     var where_clause: ?sqlparser.WhereClause = null;
 
@@ -123,6 +138,19 @@ fn handle_query(file: std.fs.File, command: []const u8) !void {
         where_clause = where;
     }
     try parse_page_rows(table_rows, table_columns.items, select_columns.items, where_clause);
+}
+
+// TODO: Implement index scan
+fn index_scan(root_page_content: PageContent, file: std.fs.File) ![]Row {
+    var rows = std.ArrayList(Row).init(allocator);
+    defer rows.deinit();
+
+    const cell_count = root_page_content.cell_count();
+    std.debug.print("Index scan cell count: {d}\n", .{cell_count});
+    _ = file;
+    // Implement the index scan logic here
+
+    return rows.toOwnedSlice();
 }
 
 fn table_scan(root_page_content: PageContent, file: std.fs.File) ![]Row {
@@ -275,7 +303,7 @@ fn format_output_row(row: Row, columnIndexs: []u64) !void {
     try stdOutWriter.print("\n", .{});
 }
 
-fn find_table_root_page(file: std.fs.File, table_name: []const u8) !struct { root_page: u32, sql: []const u8 } {
+fn find_table_root_page(file: std.fs.File, table_name: []const u8) !struct { root_page: u32, sql: []const u8, index_root_page: ?u32 } {
     const filePtr = @constCast(&file);
     var parser = Parser.init(filePtr);
     const cellPointers = try parser.parse_cellpointer_array(1);
@@ -285,15 +313,29 @@ fn find_table_root_page(file: std.fs.File, table_name: []const u8) !struct { roo
     const table_names = tableRootPages.tables;
     const root_pages = tableRootPages.rootPages;
     const sqls = tableRootPages.sqls;
+    var index_root_page: ?u32 = null;
+    for (sqls.items, 0..) |sql, i| {
+        if (std.mem.startsWith(u8, sql, "CREATE INDEX")) {
+            std.debug.print("Found index creation SQL: {s}\n", .{sql});
+            index_root_page = root_pages.items[i];
+            std.debug.print("Index root page set to: {d}\n", .{index_root_page.?});
+        }
+    }
+
     var index: ?usize = null;
     for (table_names.items, 0..) |item, i| {
         if (std.mem.eql(u8, item, table_name)) {
             index = i;
+            // std.debug.print("Found table: {s} at index {d}\n", .{ item, i });
             break;
         }
     }
+    for (table_names.items, 0..) |name, i| {
+        std.debug.print("Table found: {s}, {d}\n", .{ name, i });
+        // std.debug.print("Root page: {d}\n", .{root_pages.items[i]});
+    }
     if (index == null) return error.TableNotFound;
-    return .{ .root_page = root_pages.items[index.?], .sql = sqls.items[index.?] };
+    return .{ .root_page = root_pages.items[index.?], .sql = sqls.items[index.?], .index_root_page = index_root_page };
 }
 
 fn openDbFile(file_path: []const u8) !std.fs.File {
